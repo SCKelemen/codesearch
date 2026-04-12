@@ -8,6 +8,7 @@ import (
 
 	"github.com/SCKelemen/clix"
 	"github.com/SCKelemen/codesearch"
+	"github.com/SCKelemen/codesearch/proto/codesearchv1"
 )
 
 func newServeCommand() *clix.Command {
@@ -44,6 +45,9 @@ func newServeCommand() *clix.Command {
 func runServer(out io.Writer, engine *codesearch.Engine, addr, indexDir string) error {
 	ui := newCLIUI(out)
 	mux := http.NewServeMux()
+	connectHandler := codesearchv1.NewCodeSearchHandler(engine)
+	mux.Handle(codesearchv1.SearchProcedurePath, connectHandler)
+	mux.Handle(codesearchv1.IndexStatusProcedurePath, connectHandler)
 	mux.HandleFunc(searchAPIPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -70,7 +74,13 @@ func runServer(out io.Writer, engine *codesearch.Engine, addr, indexDir string) 
 		}
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprintf(w, "csx search service\nGET %s?q=<query>&limit=20&mode=hybrid\n", searchAPIPath)
+		_, _ = fmt.Fprintf(
+			w,
+			"csx search service\nGET %s?q=<query>&limit=20&mode=hybrid\nPOST %s\nPOST %s\n",
+			searchAPIPath,
+			codesearchv1.SearchProcedurePath,
+			codesearchv1.IndexStatusProcedurePath,
+		)
 	})
 
 	server := &http.Server{
@@ -82,5 +92,7 @@ func runServer(out io.Writer, engine *codesearch.Engine, addr, indexDir string) 
 	ui.kv("addr", addr)
 	ui.kv("index", indexDir)
 	ui.kv("endpoint", searchAPIPath)
+	ui.kv("connect-search", codesearchv1.SearchProcedurePath)
+	ui.kv("connect-status", codesearchv1.IndexStatusProcedurePath)
 	return server.ListenAndServe()
 }

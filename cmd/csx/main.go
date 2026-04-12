@@ -33,6 +33,7 @@ func newApp() *clix.App {
 	root.Children = []*clix.Command{
 		newIndexCommand(),
 		newSearchCommand(),
+		newInteractiveCommand(),
 		newServeCommand(),
 		newStatusCommand(),
 	}

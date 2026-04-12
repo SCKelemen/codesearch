@@ -1,0 +1,45 @@
+syntax = "proto3";
+package codesearch.v1;
+option go_package = "github.com/SCKelemen/codesearch/proto/codesearchv1";
+
+service CodeSearchService {
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc IndexStatus(IndexStatusRequest) returns (IndexStatusResponse);
+}
+
+message SearchRequest {
+  string query = 1;
+  int32 limit = 2;
+  string mode = 3;  // "hybrid", "lexical", "semantic"
+  string filter = 4; // CEL filter expression
+}
+
+message SearchResponse {
+  string query = 1;
+  int32 limit = 2;
+  string mode = 3;
+  repeated SearchResult results = 4;
+}
+
+message SearchResult {
+  string path = 1;
+  int32 line = 2;
+  double score = 3;
+  string snippet = 4;
+  repeated MatchRange matches = 5;
+}
+
+message MatchRange {
+  int32 start = 1;
+  int32 end = 2;
+}
+
+message IndexStatusRequest {}
+
+message IndexStatusResponse {
+  int32 file_count = 1;
+  int64 total_bytes = 2;
+  int64 index_bytes = 3;
+  int32 embedding_count = 4;
+  map<string, int32> languages = 5;
+}
