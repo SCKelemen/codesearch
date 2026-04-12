@@ -13,11 +13,13 @@ type trigramState struct {
 	PostingLists []store.PostingList
 }
 
+// TrigramStore provides file-backed persistent storage for trigram posting lists.
 type TrigramStore struct {
 	memory *memory.TrigramStore
 	disk   *persistence
 }
 
+// NewTrigramStore creates a new file-backed trigram store in the given directory.
 func NewTrigramStore(dir string, options ...Option) (*TrigramStore, error) {
 	memoryStore := memory.NewTrigramStore()
 	store := &TrigramStore{memory: memoryStore}

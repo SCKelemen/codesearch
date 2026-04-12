@@ -26,6 +26,7 @@ type Builder struct {
 	symbols   *memory.SymbolStore
 }
 
+// NewBuilder creates a new shard builder for constructing index shards.
 func NewBuilder() *Builder {
 	return &Builder{
 		documents: memory.NewDocumentStore(),

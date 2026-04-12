@@ -2,6 +2,7 @@ package linguist
 
 import "strings"
 
+// Language represents a programming language with metadata from GitHub Linguist.
 type Language struct {
 	Name       string
 	Color      string
@@ -11,8 +12,12 @@ type Language struct {
 	Group      string
 }
 
+// Languages maps language names to their metadata. It is populated at init time
+// from GitHub Linguist data.
 var Languages = map[string]*Language{}
 
+// LookupByExtension returns the language associated with a file extension.
+// It returns nil if no language matches.
 func LookupByExtension(ext string) *Language {
 	needle := normalizeExtension(ext)
 	if needle == "" {
@@ -28,6 +33,8 @@ func LookupByExtension(ext string) *Language {
 	return nil
 }
 
+// LookupByName returns the language with the given name.
+// It returns nil if no language matches.
 func LookupByName(name string) *Language {
 	needle := strings.TrimSpace(strings.ToLower(name))
 	if needle == "" {

@@ -14,11 +14,13 @@ type symbolState struct {
 	References []store.Reference
 }
 
+// SymbolStore provides file-backed persistent storage for symbols and references.
 type SymbolStore struct {
 	memory *memory.SymbolStore
 	disk   *persistence
 }
 
+// NewSymbolStore creates a new file-backed symbol store in the given directory.
 func NewSymbolStore(dir string, options ...Option) (*SymbolStore, error) {
 	memoryStore := memory.NewSymbolStore()
 	store := &SymbolStore{memory: memoryStore}

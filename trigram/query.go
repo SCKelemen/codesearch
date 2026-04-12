@@ -9,6 +9,7 @@ import (
 	"strings"
 )
 
+// ErrNoExtractableTrigrams is returned when a query string yields no usable trigrams.
 var ErrNoExtractableTrigrams = errors.New("no extractable trigrams")
 
 // QueryPlan describes the trigram prefilter and regex used for final verification.

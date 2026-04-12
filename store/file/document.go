@@ -13,11 +13,13 @@ type documentState struct {
 	Documents []store.Document
 }
 
+// DocumentStore provides file-backed persistent storage for documents.
 type DocumentStore struct {
 	memory *memory.DocumentStore
 	disk   *persistence
 }
 
+// NewDocumentStore creates a new file-backed document store in the given directory.
 func NewDocumentStore(dir string, options ...Option) (*DocumentStore, error) {
 	memoryStore := memory.NewDocumentStore()
 	store := &DocumentStore{memory: memoryStore}

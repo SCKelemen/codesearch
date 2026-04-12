@@ -12,6 +12,7 @@ import (
 	"time"
 )
 
+// FlushStrategy controls when file-backed stores write data to disk.
 type FlushStrategy int
 
 const (
@@ -22,6 +23,7 @@ const (
 
 const defaultBatchWindow = 100 * time.Millisecond
 
+// Option configures a file-backed store.
 type Option func(*config)
 
 type config struct {
@@ -36,12 +38,14 @@ func defaultConfig() config {
 	}
 }
 
+// WithFlushStrategy sets the flush strategy for a file-backed store.
 func WithFlushStrategy(strategy FlushStrategy) Option {
 	return func(cfg *config) {
 		cfg.flushStrategy = strategy
 	}
 }
 
+// WithBatchWindow sets the batch window duration for deferred flushes.
 func WithBatchWindow(window time.Duration) Option {
 	return func(cfg *config) {
 		if window > 0 {

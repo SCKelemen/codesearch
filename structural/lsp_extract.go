@@ -23,7 +23,7 @@ func ExtractWithLSP(ctx context.Context, mux *lsp.Multiplexer, filePath string, 
 		return ExtractSymbols(filePath, src)
 	}
 	if ctx == nil {
-		ctx = context.Background()
+		return ExtractSymbols(filePath, src)
 	}
 
 	absPath, err := filepath.Abs(filePath)

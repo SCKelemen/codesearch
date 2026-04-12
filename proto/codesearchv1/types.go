@@ -1,5 +1,6 @@
 package codesearchv1
 
+// SearchRequest contains the parameters for a code search query.
 type SearchRequest struct {
 	Query  string `json:"query"`
 	Limit  int32  `json:"limit,omitempty"`
@@ -7,6 +8,7 @@ type SearchRequest struct {
 	Filter string `json:"filter,omitempty"`
 }
 
+// SearchResponse contains the results of a code search query.
 type SearchResponse struct {
 	Query   string         `json:"query"`
 	Limit   int32          `json:"limit"`
@@ -14,6 +16,7 @@ type SearchResponse struct {
 	Results []SearchResult `json:"results"`
 }
 
+// SearchResult represents a single search hit with match details.
 type SearchResult struct {
 	Path    string       `json:"path"`
 	Line    int32        `json:"line,omitempty"`
@@ -22,11 +25,13 @@ type SearchResult struct {
 	Matches []MatchRange `json:"matches,omitempty"`
 }
 
+// MatchRange identifies a matched region within a line of content.
 type MatchRange struct {
 	Start int32 `json:"start"`
 	End   int32 `json:"end"`
 }
 
+// SearchSymbolsRequest contains the parameters for a symbol search query.
 type SearchSymbolsRequest struct {
 	Name      string `json:"name,omitempty"`
 	Kind      string `json:"kind,omitempty"`
@@ -36,10 +41,12 @@ type SearchSymbolsRequest struct {
 	Limit     int32  `json:"limit,omitempty"`
 }
 
+// SearchSymbolsResponse contains the results of a symbol search query.
 type SearchSymbolsResponse struct {
 	Results []SymbolResult `json:"results"`
 }
 
+// SymbolResult represents a single symbol search hit.
 type SymbolResult struct {
 	Name      string      `json:"name"`
 	Kind      string      `json:"kind"`
@@ -50,6 +57,7 @@ type SymbolResult struct {
 	Range     SourceRange `json:"range"`
 }
 
+// SourceRange identifies a range of lines and columns in a source file.
 type SourceRange struct {
 	StartLine   int32 `json:"startLine"`
 	StartColumn int32 `json:"startColumn"`
@@ -57,8 +65,10 @@ type SourceRange struct {
 	EndColumn   int32 `json:"endColumn"`
 }
 
+// IndexStatusRequest is the request message for index status queries.
 type IndexStatusRequest struct{}
 
+// IndexStatusResponse contains index health and statistics.
 type IndexStatusResponse struct {
 	FileCount      int32            `json:"fileCount"`
 	TotalBytes     int64            `json:"totalBytes"`

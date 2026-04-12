@@ -13,11 +13,13 @@ type vectorState struct {
 	Vectors []store.StoredVector
 }
 
+// VectorStore provides file-backed persistent storage for embedding vectors.
 type VectorStore struct {
 	memory *memory.VectorStore
 	disk   *persistence
 }
 
+// NewVectorStore creates a new file-backed vector store in the given directory.
 func NewVectorStore(dir string, options ...Option) (*VectorStore, error) {
 	memoryStore := memory.NewVectorStore()
 	store := &VectorStore{memory: memoryStore}

@@ -89,10 +89,12 @@ func (u *cliUI) paint(c colors.Color, value string) string {
 	return fmt.Sprintf("\x1b[38;2;%d;%d;%dm%s\x1b[0m", toByte(r), toByte(g), toByte(b), value)
 }
 
+// mustColor parses a hex color string. It returns black on invalid input
+// instead of panicking, ensuring CLI startup never crashes on bad color values.
 func mustColor(hex string) colors.Color {
 	colorValue, err := colors.HexToRGB(hex)
 	if err != nil {
-		panic(err)
+		return colors.RGB(0, 0, 0)
 	}
 	return colorValue
 }

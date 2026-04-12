@@ -4,6 +4,7 @@ import (
 	"strings"
 )
 
+// Author represents a git commit author with name and email.
 type Author struct {
 	Name  string
 	Email string
@@ -14,6 +15,7 @@ type trailer struct {
 	value string
 }
 
+// ParseCoAuthors extracts Co-Authored-By trailers from a git commit message.
 func ParseCoAuthors(message string) []Author {
 	trailers := parseTrailers(message)
 	if len(trailers) == 0 {
@@ -38,6 +40,7 @@ func ParseCoAuthors(message string) []Author {
 	return authors
 }
 
+// ParseTrailers extracts all git trailers from a commit message body.
 func ParseTrailers(message string) map[string][]string {
 	trailers := parseTrailers(message)
 	if len(trailers) == 0 {

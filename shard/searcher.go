@@ -16,6 +16,7 @@ type Searcher struct {
 	shards []store.IndexShard
 }
 
+// NewSearcher creates a searcher that queries across multiple index shards.
 func NewSearcher(shards ...store.IndexShard) *Searcher {
 	return &Searcher{shards: append([]store.IndexShard(nil), shards...)}
 }

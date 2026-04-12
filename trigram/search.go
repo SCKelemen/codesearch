@@ -35,6 +35,7 @@ type Searcher struct {
 	idx Index
 }
 
+// NewSearcher creates a trigram searcher backed by the given index.
 func NewSearcher(idx Index) *Searcher {
 	return &Searcher{idx: idx}
 }

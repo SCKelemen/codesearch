@@ -21,6 +21,7 @@ import (
 
 var errClientClosed = errors.New("lsp client closed")
 
+// Client communicates with a language server over stdio using JSON-RPC 2.0.
 type Client struct {
 	id          ServerID
 	cmd         *exec.Cmd
@@ -35,21 +36,25 @@ type Client struct {
 	closeOnce   sync.Once
 }
 
+// Position represents a zero-based line and character position in a text document.
 type Position struct {
 	Line      int `json:"line"`
 	Character int `json:"character"`
 }
 
+// Range represents a span in a text document between two positions.
 type Range struct {
 	Start Position `json:"start"`
 	End   Position `json:"end"`
 }
 
+// Location identifies a document URI and range.
 type Location struct {
 	URI   string `json:"uri"`
 	Range Range  `json:"range"`
 }
 
+// Symbol represents a document symbol returned by textDocument/documentSymbol.
 type Symbol struct {
 	Name           string   `json:"name"`
 	Kind           int      `json:"kind"`
@@ -58,10 +63,12 @@ type Symbol struct {
 	Children       []Symbol `json:"children,omitempty"`
 }
 
+// HoverResult contains hover information for a symbol.
 type HoverResult struct {
 	Contents string
 }
 
+// Diagnostic represents a compiler or language-server diagnostic.
 type Diagnostic struct {
 	Range    Range  `json:"range"`
 	Severity int    `json:"severity,omitempty"`
@@ -99,6 +106,7 @@ func (e *jsonrpcError) Error() string {
 	return fmt.Sprintf("json-rpc error %d: %s", e.Code, e.Message)
 }
 
+// NewClient starts a language server subprocess and initializes an LSP connection.
 func NewClient(ctx context.Context, workDir string, command []string) (*Client, error) {
 	if len(command) == 0 {
 		return nil, errors.New("lsp command is empty")
@@ -422,6 +430,7 @@ func (c *Client) initialize(ctx context.Context) error {
 	return c.sendNotification("initialized", map[string]any{})
 }
 
+// FileURI converts a filesystem path to a file:// URI.
 func FileURI(path string) string {
 	if path == "" {
 		return ""
@@ -434,6 +443,7 @@ func FileURI(path string) string {
 	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}).String()
 }
 
+// URIToPath converts a file:// URI back to a filesystem path.
 func URIToPath(uri string) string {
 	if uri == "" {
 		return ""

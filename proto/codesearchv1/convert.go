@@ -2,6 +2,7 @@ package codesearchv1
 
 import codesearchpb "github.com/SCKelemen/codesearch/gen/codesearch/v1"
 
+// SearchRequestFromProto converts a protobuf SearchRequest to the domain type.
 func SearchRequestFromProto(request *codesearchpb.SearchRequest) SearchRequest {
 	if request == nil {
 		return SearchRequest{}
@@ -23,6 +24,7 @@ func (request SearchRequest) ToProto() *codesearchpb.SearchRequest {
 	}
 }
 
+// SearchResponseFromProto converts a protobuf SearchResponse to the domain type.
 func SearchResponseFromProto(response *codesearchpb.SearchResponse) SearchResponse {
 	if response == nil {
 		return SearchResponse{}
@@ -52,6 +54,7 @@ func (response SearchResponse) ToProto() *codesearchpb.SearchResponse {
 	}
 }
 
+// SearchResultFromProto converts a protobuf SearchResult to the domain type.
 func SearchResultFromProto(result *codesearchpb.SearchResult) SearchResult {
 	if result == nil {
 		return SearchResult{}
@@ -83,6 +86,7 @@ func (result SearchResult) ToProto() *codesearchpb.SearchResult {
 	}
 }
 
+// MatchRangeFromProto converts a protobuf MatchRange to the domain type.
 func MatchRangeFromProto(match *codesearchpb.MatchRange) MatchRange {
 	if match == nil {
 		return MatchRange{}
@@ -100,6 +104,7 @@ func (match MatchRange) ToProto() *codesearchpb.MatchRange {
 	}
 }
 
+// SearchSymbolsRequestFromProto converts a protobuf SearchSymbolsRequest to the domain type.
 func SearchSymbolsRequestFromProto(request *codesearchpb.SearchSymbolsRequest) SearchSymbolsRequest {
 	if request == nil {
 		return SearchSymbolsRequest{}
@@ -125,6 +130,7 @@ func (request SearchSymbolsRequest) ToProto() *codesearchpb.SearchSymbolsRequest
 	}
 }
 
+// SearchSymbolsResponseFromProto converts a protobuf SearchSymbolsResponse to the domain type.
 func SearchSymbolsResponseFromProto(response *codesearchpb.SearchSymbolsResponse) SearchSymbolsResponse {
 	if response == nil {
 		return SearchSymbolsResponse{}
@@ -144,6 +150,7 @@ func (response SearchSymbolsResponse) ToProto() *codesearchpb.SearchSymbolsRespo
 	return &codesearchpb.SearchSymbolsResponse{Results: results}
 }
 
+// SymbolResultFromProto converts a protobuf SymbolResult to the domain type.
 func SymbolResultFromProto(result *codesearchpb.SymbolResult) SymbolResult {
 	if result == nil {
 		return SymbolResult{}
@@ -171,6 +178,7 @@ func (result SymbolResult) ToProto() *codesearchpb.SymbolResult {
 	}
 }
 
+// SourceRangeFromProto converts a protobuf SourceRange to the domain type.
 func SourceRangeFromProto(sourceRange *codesearchpb.SourceRange) SourceRange {
 	if sourceRange == nil {
 		return SourceRange{}
@@ -192,6 +200,7 @@ func (sourceRange SourceRange) ToProto() *codesearchpb.SourceRange {
 	}
 }
 
+// IndexStatusRequestFromProto converts a protobuf IndexStatusRequest to the domain type.
 func IndexStatusRequestFromProto(*codesearchpb.IndexStatusRequest) IndexStatusRequest {
 	return IndexStatusRequest{}
 }
@@ -200,6 +209,7 @@ func (IndexStatusRequest) ToProto() *codesearchpb.IndexStatusRequest {
 	return &codesearchpb.IndexStatusRequest{}
 }
 
+// IndexStatusResponseFromProto converts a protobuf IndexStatusResponse to the domain type.
 func IndexStatusResponseFromProto(response *codesearchpb.IndexStatusResponse) IndexStatusResponse {
 	if response == nil {
 		return IndexStatusResponse{}
