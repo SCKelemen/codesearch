@@ -4,6 +4,7 @@ import (
 	"github.com/SCKelemen/codesearch/embedding"
 	"github.com/SCKelemen/codesearch/hybrid"
 	"github.com/SCKelemen/codesearch/store"
+	"github.com/SCKelemen/codesearch/structural"
 )
 
 // Option configures an Engine.
@@ -77,8 +78,10 @@ func WithHybridSearch(enabled bool) Option {
 type SearchOption func(*searchOptions)
 
 type searchOptions struct {
-	limit int
-	mode  hybrid.SearchMode
+	limit       int
+	mode        hybrid.SearchMode
+	filter      string
+	symbolQuery *structural.SymbolQuery
 }
 
 // WithLimit limits the number of returned results.
@@ -92,6 +95,21 @@ func WithLimit(limit int) SearchOption {
 func WithMode(mode hybrid.SearchMode) SearchOption {
 	return func(opts *searchOptions) {
 		opts.mode = mode
+	}
+}
+
+// WithFilter applies a CEL filter expression to search results.
+func WithFilter(expression string) SearchOption {
+	return func(opts *searchOptions) {
+		opts.filter = expression
+	}
+}
+
+// WithSymbolQuery enables structural symbol search mode.
+func WithSymbolQuery(query structural.SymbolQuery) SearchOption {
+	return func(opts *searchOptions) {
+		queryCopy := query
+		opts.symbolQuery = &queryCopy
 	}
 }
 

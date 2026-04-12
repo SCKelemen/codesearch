@@ -104,8 +104,18 @@ func TestExtractSymbolsGeneric(t *testing.T) {
 				{Name: "Widget", Kind: SymbolKindClass, Language: "typescript", Path: "widget.ts", Exported: true},
 				{Name: "Named", Kind: SymbolKindInterface, Language: "typescript", Path: "widget.ts", Exported: true},
 				{Name: "State", Kind: SymbolKindEnum, Language: "typescript", Path: "widget.ts", Exported: true},
-				{Name: "build", Kind: SymbolKindFunction, Language: "typescript", Path: "widget.ts", Exported: false},
+				{Name: "build", Kind: SymbolKindFunction, Language: "typescript", Path: "widget.ts", Exported: true},
 				{Name: "VERSION", Kind: SymbolKindConstant, Language: "typescript", Path: "widget.ts", Exported: true},
+			},
+		},
+		{
+			name: "javascript",
+			path: "widget.js",
+			src:  "export class Widget {}\nexport function build() {}\nexport const VERSION = '1';\n",
+			wants: []Symbol{
+				{Name: "Widget", Kind: SymbolKindClass, Language: "javascript", Path: "widget.js", Exported: true},
+				{Name: "build", Kind: SymbolKindFunction, Language: "javascript", Path: "widget.js", Exported: true},
+				{Name: "VERSION", Kind: SymbolKindConstant, Language: "javascript", Path: "widget.js", Exported: true},
 			},
 		},
 		{

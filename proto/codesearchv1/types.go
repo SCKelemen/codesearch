@@ -27,6 +27,36 @@ type MatchRange struct {
 	End   int32 `json:"end"`
 }
 
+type SearchSymbolsRequest struct {
+	Name      string `json:"name,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Language  string `json:"language,omitempty"`
+	Container string `json:"container,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Limit     int32  `json:"limit,omitempty"`
+}
+
+type SearchSymbolsResponse struct {
+	Results []SymbolResult `json:"results"`
+}
+
+type SymbolResult struct {
+	Name      string      `json:"name"`
+	Kind      string      `json:"kind"`
+	Language  string      `json:"language"`
+	Path      string      `json:"path"`
+	Container string      `json:"container,omitempty"`
+	Exported  bool        `json:"exported"`
+	Range     SourceRange `json:"range"`
+}
+
+type SourceRange struct {
+	StartLine   int32 `json:"startLine"`
+	StartColumn int32 `json:"startColumn"`
+	EndLine     int32 `json:"endLine"`
+	EndColumn   int32 `json:"endColumn"`
+}
+
 type IndexStatusRequest struct{}
 
 type IndexStatusResponse struct {

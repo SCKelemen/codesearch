@@ -1,10 +1,11 @@
 syntax = "proto3";
 package codesearch.v1;
-option go_package = "github.com/SCKelemen/codesearch/proto/codesearchv1";
+option go_package = "github.com/SCKelemen/codesearch/gen/codesearch/v1;codesearchv1";
 
 service CodeSearchService {
   rpc Search(SearchRequest) returns (SearchResponse);
   rpc IndexStatus(IndexStatusRequest) returns (IndexStatusResponse);
+  rpc SearchSymbols(SearchSymbolsRequest) returns (SearchSymbolsResponse);
 }
 
 message SearchRequest {
@@ -32,6 +33,36 @@ message SearchResult {
 message MatchRange {
   int32 start = 1;
   int32 end = 2;
+}
+
+message SearchSymbolsRequest {
+  string name = 1;      // glob pattern
+  string kind = 2;      // "function", "method", "class", etc.
+  string language = 3;
+  string container = 4;
+  string path = 5;      // glob pattern
+  int32 limit = 6;
+}
+
+message SearchSymbolsResponse {
+  repeated SymbolResult results = 1;
+}
+
+message SymbolResult {
+  string name = 1;
+  string kind = 2;
+  string language = 3;
+  string path = 4;
+  string container = 5;
+  bool exported = 6;
+  SourceRange range = 7;
+}
+
+message SourceRange {
+  int32 start_line = 1;
+  int32 start_column = 2;
+  int32 end_line = 3;
+  int32 end_column = 4;
 }
 
 message IndexStatusRequest {}

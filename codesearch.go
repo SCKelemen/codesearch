@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,12 +14,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SCKelemen/codesearch/celfilter"
 	"github.com/SCKelemen/codesearch/embedding"
 	"github.com/SCKelemen/codesearch/hybrid"
 	"github.com/SCKelemen/codesearch/linguist"
 	"github.com/SCKelemen/codesearch/store"
 	filestore "github.com/SCKelemen/codesearch/store/file"
 	memorystore "github.com/SCKelemen/codesearch/store/memory"
+	"github.com/SCKelemen/codesearch/structural"
 	"github.com/SCKelemen/codesearch/trigram"
 )
 
@@ -211,6 +214,9 @@ func (e *Engine) indexDocument(ctx context.Context, path string, content []byte,
 	if err := e.Vectors.Delete(ctx, documentID); err != nil {
 		return err
 	}
+	if err := e.removeDocumentSymbols(ctx, documentID); err != nil {
+		return err
+	}
 
 	language := opts.language
 	if language == "" {
@@ -266,16 +272,38 @@ func (e *Engine) indexDocument(ctx context.Context, path string, content []byte,
 		}
 	}
 
+	if err := e.indexSymbols(ctx, doc); err != nil {
+		return err
+	}
+
 	return e.flush()
 }
 
-// Search executes lexical, semantic, or hybrid search.
+// Search executes lexical, semantic, structural, or hybrid search.
 func (e *Engine) Search(ctx context.Context, query string, opts ...SearchOption) ([]Result, error) {
 	if err := e.ready(); err != nil {
 		return nil, err
 	}
 
 	searchOpts := resolveSearchOptions(opts...)
+	if searchOpts.symbolQuery != nil {
+		symbols, err := e.SearchSymbols(ctx, *searchOpts.symbolQuery)
+		if err != nil {
+			return nil, err
+		}
+		if len(symbols) > searchOpts.limit {
+			symbols = symbols[:searchOpts.limit]
+		}
+		results, err := e.resultsFromSymbols(ctx, symbols)
+		if err != nil {
+			return nil, err
+		}
+		if searchOpts.filter == "" {
+			return results, nil
+		}
+		return e.filterResults(ctx, results, searchOpts.filter)
+	}
+
 	mode := searchOpts.mode
 	if mode == "" {
 		if e.HybridSearcher != nil && e.hybridEnabled {
@@ -294,44 +322,89 @@ func (e *Engine) Search(ctx context.Context, query string, opts ...SearchOption)
 		mode = hybrid.LexicalOnly
 	}
 
+	var (
+		results []Result
+		err     error
+	)
+
 	if mode == hybrid.LexicalOnly || e.HybridSearcher == nil {
-		hits, err := e.lexicalSearch(ctx, query, searchOpts.limit)
+		var hits []searchHit
+		hits, err = e.lexicalSearch(ctx, query, searchOpts.limit)
 		if err != nil {
 			return nil, err
 		}
-		return hitsToResults(hits), nil
-	}
-
-	queryVector, err := e.embedQuery(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	if mode == hybrid.SemanticOnly {
-		hits, err := e.semanticSearch(ctx, queryVector, searchOpts.limit)
+		results = hitsToResults(hits)
+	} else {
+		queryVector, err := e.embedQuery(ctx, query)
 		if err != nil {
 			return nil, err
 		}
-		return hitsToResults(hits), nil
+		if mode == hybrid.SemanticOnly {
+			var hits []searchHit
+			hits, err = e.semanticSearch(ctx, queryVector, searchOpts.limit)
+			if err != nil {
+				return nil, err
+			}
+			results = hitsToResults(hits)
+		} else {
+			var fused []hybrid.FusedResult
+			fused, err = e.HybridSearcher.Search(ctx, hybrid.SearchRequest{
+				Query:      query,
+				Vector:     queryVector,
+				MaxResults: searchOpts.limit,
+				Mode:       mode,
+			})
+			if err != nil {
+				return nil, err
+			}
+			lexicalHits, err := e.lexicalSearch(ctx, query, searchOpts.limit)
+			if err != nil {
+				return nil, err
+			}
+			semanticHits, err := e.semanticSearch(ctx, queryVector, searchOpts.limit)
+			if err != nil {
+				return nil, err
+			}
+			results, err = e.fusedResults(ctx, fused, lexicalHits, semanticHits)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
-	fused, err := e.HybridSearcher.Search(ctx, hybrid.SearchRequest{
-		Query:      query,
-		Vector:     queryVector,
-		MaxResults: searchOpts.limit,
-		Mode:       mode,
-	})
+	if searchOpts.filter == "" {
+		return results, nil
+	}
+	return e.filterResults(ctx, results, searchOpts.filter)
+}
+
+// SearchSymbols executes structural symbol search across indexed documents.
+func (e *Engine) SearchSymbols(ctx context.Context, query structural.SymbolQuery) ([]structural.Symbol, error) {
+	if err := e.ready(); err != nil {
+		return nil, err
+	}
+
+	documents, err := e.listDocuments(ctx)
 	if err != nil {
 		return nil, err
 	}
-	lexicalHits, err := e.lexicalSearch(ctx, query, searchOpts.limit)
-	if err != nil {
-		return nil, err
+
+	index := &structural.SymbolIndex{}
+	for _, doc := range documents {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		symbols, err := extractStructuralSymbols(doc.Path, doc.Language, doc.Content)
+		if err != nil {
+			return nil, err
+		}
+		for _, symbol := range symbols {
+			index.Add(symbol)
+		}
 	}
-	semanticHits, err := e.semanticSearch(ctx, queryVector, searchOpts.limit)
-	if err != nil {
-		return nil, err
-	}
-	return e.fusedResults(ctx, fused, lexicalHits, semanticHits)
+
+	return index.Search(query), nil
 }
 
 // Close flushes and closes any managed stores.
@@ -649,6 +722,316 @@ func substringSearchHit(doc store.Document, query string) (searchHit, bool) {
 		}, true
 	}
 	return searchHit{}, false
+}
+
+func (e *Engine) filterResults(ctx context.Context, results []Result, expression string) ([]Result, error) {
+	program, err := celfilter.Compile(expression)
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]Result, 0, len(results))
+	for _, result := range results {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		doc, err := e.Documents.Lookup(ctx, cleanPath(result.Path))
+		if err != nil {
+			return nil, err
+		}
+		if doc == nil {
+			continue
+		}
+
+		matches, err := program.Eval(filterContextFromDocument(*doc))
+		if err != nil {
+			return nil, err
+		}
+		if matches {
+			filtered = append(filtered, result)
+		}
+	}
+
+	return filtered, nil
+}
+
+func filterContextFromDocument(doc store.Document) celfilter.FilterContext {
+	projectID := ""
+	if doc.Metadata != nil {
+		projectID = doc.Metadata["project_id"]
+	}
+
+	return celfilter.FilterContext{
+		Language:      doc.Language,
+		FilePath:      doc.Path,
+		FileExtension: strings.ToLower(filepath.Ext(doc.Path)),
+		FileSize:      doc.Size,
+		Branch:        doc.Branch,
+		Repository:    doc.RepositoryID,
+		ProjectID:     projectID,
+	}
+}
+
+func (e *Engine) resultsFromSymbols(ctx context.Context, symbols []structural.Symbol) ([]Result, error) {
+	results := make([]Result, 0, len(symbols))
+	for _, symbol := range symbols {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		result, err := e.resultFromSymbol(ctx, symbol)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func (e *Engine) resultFromSymbol(ctx context.Context, symbol structural.Symbol) (Result, error) {
+	result := Result{
+		Path: symbol.Path,
+		Line: symbol.Range.StartLine,
+	}
+
+	symbolCopy := symbol
+	result.Symbol = &symbolCopy
+
+	doc, err := e.Documents.Lookup(ctx, cleanPath(symbol.Path))
+	if err != nil {
+		return Result{}, err
+	}
+	if doc != nil {
+		result.Content = string(doc.Content)
+		result.Snippet = lineAt(doc.Content, symbol.Range.StartLine)
+	}
+
+	return result, nil
+}
+
+func lineAt(content []byte, lineNumber int) string {
+	if lineNumber <= 0 {
+		return ""
+	}
+	currentLine := 1
+	for line := range bytes.SplitSeq(content, []byte{10}) {
+		if currentLine == lineNumber {
+			return string(line)
+		}
+		currentLine++
+	}
+	return ""
+}
+
+func (e *Engine) listDocuments(ctx context.Context) ([]store.Document, error) {
+	var documents []store.Document
+	cursor := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		batch, nextCursor, err := e.Documents.List(ctx, store.WithLimit(512), store.WithCursor(cursor))
+		if err != nil {
+			return nil, err
+		}
+
+		documents = append(documents, batch...)
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+
+	return documents, nil
+}
+
+func (e *Engine) removeDocumentSymbols(ctx context.Context, documentID string) error {
+	var symbolIDs []string
+	cursor := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		symbols, nextCursor, err := e.Symbols.List(ctx, store.WithDocumentID(documentID), store.WithLimit(512), store.WithCursor(cursor))
+		if err != nil {
+			return err
+		}
+		for _, symbol := range symbols {
+			symbolIDs = append(symbolIDs, symbol.ID)
+		}
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+
+	for _, symbolID := range symbolIDs {
+		if err := e.Symbols.Delete(ctx, symbolID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (e *Engine) indexSymbols(ctx context.Context, doc store.Document) error {
+	symbols, err := extractStructuralSymbols(doc.Path, doc.Language, doc.Content)
+	if err != nil {
+		return err
+	}
+
+	for _, symbol := range symbols {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := e.Symbols.Put(ctx, storeSymbolFromStructural(doc, symbol)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func extractStructuralSymbols(path string, language string, content []byte) ([]structural.Symbol, error) {
+	normalizedLanguage := normalizeLanguage(language)
+	switch normalizedLanguage {
+	case "go":
+		return structural.ExtractGoSymbols(path, content)
+	case "typescript", "javascript", "python", "rust", "java":
+		extractorPath := genericExtractorPath(path, normalizedLanguage)
+		symbols, err := structural.ExtractSymbolsGeneric(extractorPath, content)
+		if err != nil {
+			return nil, err
+		}
+		for idx := range symbols {
+			symbols[idx].Path = path
+			symbols[idx].Language = normalizedLanguage
+		}
+		return symbols, nil
+	default:
+		return nil, nil
+	}
+}
+
+func genericExtractorPath(path string, language string) string {
+	extension := strings.ToLower(filepath.Ext(path))
+	switch language {
+	case "python":
+		if extension == ".py" {
+			return path
+		}
+		return path + ".py"
+	case "typescript":
+		if extension == ".ts" || extension == ".tsx" {
+			return path
+		}
+		return path + ".ts"
+	case "javascript":
+		if extension == ".js" || extension == ".jsx" {
+			return path
+		}
+		return path + ".js"
+	case "rust":
+		if extension == ".rs" {
+			return path
+		}
+		return path + ".rs"
+	case "java":
+		if extension == ".java" {
+			return path
+		}
+		return path + ".java"
+	default:
+		return path
+	}
+}
+
+func normalizeLanguage(language string) string {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "go", "golang":
+		return "go"
+	case "typescript", "typescriptreact", "tsx":
+		return "typescript"
+	case "javascript", "javascriptreact", "js", "jsx":
+		return "javascript"
+	case "python", "py":
+		return "python"
+	case "rust", "rs":
+		return "rust"
+	case "java":
+		return "java"
+	default:
+		return strings.ToLower(strings.TrimSpace(language))
+	}
+}
+
+func storeSymbolFromStructural(doc store.Document, symbol structural.Symbol) store.Symbol {
+	return store.Symbol{
+		ID:           structuralSymbolID(doc.ID, symbol),
+		Name:         symbol.Name,
+		Kind:         storeSymbolKind(symbol.Kind),
+		RepositoryID: doc.RepositoryID,
+		Branch:       doc.Branch,
+		DocumentID:   doc.ID,
+		Path:         doc.Path,
+		Language:     symbol.Language,
+		Container:    symbol.Container,
+		Range: store.Span{
+			StartLine:   symbol.Range.StartLine,
+			StartColumn: symbol.Range.StartColumn,
+			EndLine:     symbol.Range.EndLine,
+			EndColumn:   symbol.Range.EndColumn,
+		},
+		Exported:   symbol.Exported,
+		Definition: true,
+	}
+}
+
+func structuralSymbolID(documentID string, symbol structural.Symbol) string {
+	return checksum([]byte(fmt.Sprintf("%s:%s:%d:%s:%d:%d:%d:%d",
+		documentID,
+		symbol.Name,
+		symbol.Kind,
+		symbol.Container,
+		symbol.Range.StartLine,
+		symbol.Range.StartColumn,
+		symbol.Range.EndLine,
+		symbol.Range.EndColumn,
+	)))
+}
+
+func storeSymbolKind(kind structural.SymbolKind) store.SymbolKind {
+	switch kind {
+	case structural.SymbolKindPackage:
+		return store.SymbolKindPackage
+	case structural.SymbolKindModule:
+		return store.SymbolKindModule
+	case structural.SymbolKindClass:
+		return store.SymbolKindClass
+	case structural.SymbolKindInterface:
+		return store.SymbolKindInterface
+	case structural.SymbolKindStruct:
+		return store.SymbolKindStruct
+	case structural.SymbolKindEnum:
+		return store.SymbolKindEnum
+	case structural.SymbolKindTrait:
+		return store.SymbolKindInterface
+	case structural.SymbolKindFunction:
+		return store.SymbolKindFunction
+	case structural.SymbolKindMethod:
+		return store.SymbolKindMethod
+	case structural.SymbolKindField:
+		return store.SymbolKindField
+	case structural.SymbolKindVariable:
+		return store.SymbolKindVariable
+	case structural.SymbolKindConstant:
+		return store.SymbolKindConstant
+	default:
+		return store.SymbolKindUnknown
+	}
 }
 
 func (e *Engine) removeDocumentPostings(ctx context.Context, documentID string) error {
