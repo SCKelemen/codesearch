@@ -116,8 +116,6 @@ func (h *pipelineHook) OnComplete(_ context.Context, stats Stats) error {
 }
 
 func TestPipelineRunWithTransformersAndErrors(t *testing.T) {
-	t.Parallel()
-
 	originalTimeNow := timeNow
 	timeNow = func() int64 { return 10_500 }
 	defer func() { timeNow = originalTimeNow }()
