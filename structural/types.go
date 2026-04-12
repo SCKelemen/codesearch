@@ -19,6 +19,7 @@ const (
 	SymbolKindField
 	SymbolKindVariable
 	SymbolKindConstant
+	SymbolKindEnumMember
 )
 
 // Range identifies a source span using 1-based line and column coordinates.

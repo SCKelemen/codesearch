@@ -1,19 +1,19 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
 	"strings"
 
+	"connectrpc.com/connect"
 	"github.com/SCKelemen/clix"
 	"github.com/SCKelemen/codesearch"
-	codesearchv1 "github.com/SCKelemen/codesearch/proto/codesearchv1"
+	codesearchpb "github.com/SCKelemen/codesearch/gen/codesearch/v1"
+	codesearchv1connect "github.com/SCKelemen/codesearch/gen/codesearch/v1/codesearchv1connect"
 )
 
 func newSearchCommand() *clix.Command {
@@ -101,10 +101,11 @@ func runSearch(ctx *clix.Context, indexDir, remote string, request searchRequest
 		if err == nil {
 			return response, nil
 		}
-		if !shouldFallbackConnect(err) {
-			return searchResponse{}, err
+		fallbackResponse, fallbackErr := httpSearch(ctx, http.DefaultClient, remote, remoteRequest)
+		if fallbackErr == nil {
+			return fallbackResponse, nil
 		}
-		return httpSearch(ctx, http.DefaultClient, remote, remoteRequest)
+		return searchResponse{}, fmt.Errorf("remote connect search failed: %w; fallback JSON search failed: %v", err, fallbackErr)
 	}
 	engine, err := openEngine(indexDir)
 	if err != nil {
@@ -194,23 +195,6 @@ func clamp(value, lower, upper int) int {
 	return value
 }
 
-type connectFallbackError struct {
-	err error
-}
-
-func (e *connectFallbackError) Error() string {
-	return e.err.Error()
-}
-
-func (e *connectFallbackError) Unwrap() error {
-	return e.err
-}
-
-func shouldFallbackConnect(err error) bool {
-	var fallback *connectFallbackError
-	return errors.As(err, &fallback)
-}
-
 func httpConnectSearch(ctx context.Context, client *http.Client, address string, request searchRequest) (searchResponse, error) {
 	mode, err := normalizeMode(request.Mode)
 	if err != nil {
@@ -221,67 +205,41 @@ func httpConnectSearch(ctx context.Context, client *http.Client, address string,
 		limit = defaultSearchLimit
 	}
 
-	endpoint := normalizeAddress(address) + codesearchv1.SearchProcedurePath
-	body, err := json.Marshal(codesearchv1.SearchRequest{
+	service := codesearchv1connect.NewCodeSearchServiceClient(client, normalizeAddress(address))
+	response, err := service.Search(ctx, connect.NewRequest(&codesearchpb.SearchRequest{
 		Query: request.Query,
 		Limit: int32(limit),
 		Mode:  modeLabel(mode),
-	})
+	}))
 	if err != nil {
-		return searchResponse{}, fmt.Errorf("marshal connect request: %w", err)
+		return searchResponse{}, err
 	}
-
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return searchResponse{}, fmt.Errorf("build connect request: %w", err)
-	}
-	httpRequest.Header.Set("Accept", "application/json")
-	httpRequest.Header.Set("Connect-Protocol-Version", "1")
-	httpRequest.Header.Set("Content-Type", "application/json")
-
-	response, err := client.Do(httpRequest)
-	if err != nil {
-		return searchResponse{}, fmt.Errorf("remote connect search failed: %w", err)
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusMethodNotAllowed || response.StatusCode == http.StatusUnsupportedMediaType {
-		return searchResponse{}, &connectFallbackError{err: fmt.Errorf("connect endpoint unavailable: %s", response.Status)}
-	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		message := readRemoteError(response.Body)
-		if message == "" {
-			message = response.Status
-		}
-		return searchResponse{}, fmt.Errorf("remote connect search failed: %s", message)
-	}
-
-	var payload codesearchv1.SearchResponse
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return searchResponse{}, &connectFallbackError{err: fmt.Errorf("decode connect response: %w", err)}
-	}
-	return searchResponseFromProto(payload), nil
+	return searchResponseFromProto(response.Msg), nil
 }
 
-func searchResponseFromProto(response codesearchv1.SearchResponse) searchResponse {
-	converted := searchResponse{
-		Query:   response.Query,
-		Limit:   int(response.Limit),
-		Mode:    response.Mode,
-		Source:  "remote",
-		Results: make([]searchResult, 0, len(response.Results)),
+func searchResponseFromProto(response *codesearchpb.SearchResponse) searchResponse {
+	if response == nil {
+		return searchResponse{Source: "remote"}
 	}
-	for _, result := range response.Results {
+
+	converted := searchResponse{
+		Query:   response.GetQuery(),
+		Limit:   int(response.GetLimit()),
+		Mode:    response.GetMode(),
+		Source:  "remote",
+		Results: make([]searchResult, 0, len(response.GetResults())),
+	}
+	for _, result := range response.GetResults() {
 		entry := searchResult{
-			Path:    result.Path,
-			Line:    int(result.Line),
-			Score:   result.Score,
-			Snippet: result.Snippet,
+			Path:    result.GetPath(),
+			Line:    int(result.GetLine()),
+			Score:   result.GetScore(),
+			Snippet: result.GetSnippet(),
 		}
-		if len(result.Matches) != 0 {
-			entry.Matches = make([]matchRange, 0, len(result.Matches))
-			for _, match := range result.Matches {
-				entry.Matches = append(entry.Matches, matchRange{Start: int(match.Start), End: int(match.End)})
+		if len(result.GetMatches()) != 0 {
+			entry.Matches = make([]matchRange, 0, len(result.GetMatches()))
+			for _, match := range result.GetMatches() {
+				entry.Matches = append(entry.Matches, matchRange{Start: int(match.GetStart()), End: int(match.GetEnd())})
 			}
 		}
 		converted.Results = append(converted.Results, entry)

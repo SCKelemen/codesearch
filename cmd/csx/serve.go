@@ -8,6 +8,7 @@ import (
 
 	"github.com/SCKelemen/clix"
 	"github.com/SCKelemen/codesearch"
+	codesearchv1connect "github.com/SCKelemen/codesearch/gen/codesearch/v1/codesearchv1connect"
 	"github.com/SCKelemen/codesearch/proto/codesearchv1"
 )
 
@@ -45,9 +46,9 @@ func newServeCommand() *clix.Command {
 func runServer(out io.Writer, engine *codesearch.Engine, addr, indexDir string) error {
 	ui := newCLIUI(out)
 	mux := http.NewServeMux()
-	connectHandler := codesearchv1.NewCodeSearchHandler(engine)
-	mux.Handle(codesearchv1.SearchProcedurePath, connectHandler)
-	mux.Handle(codesearchv1.IndexStatusProcedurePath, connectHandler)
+	service := codesearchv1.NewService(engine)
+	connectPath, connectHandler := codesearchv1connect.NewCodeSearchServiceHandler(service)
+	mux.Handle(connectPath, connectHandler)
 	mux.HandleFunc(searchAPIPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -76,10 +77,11 @@ func runServer(out io.Writer, engine *codesearch.Engine, addr, indexDir string) 
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(
 			w,
-			"csx search service\nGET %s?q=<query>&limit=20&mode=hybrid\nPOST %s\nPOST %s\n",
+			"csx search service\nGET %s?q=<query>&limit=20&mode=hybrid\nPOST %s\nPOST %s\nPOST %s\n",
 			searchAPIPath,
-			codesearchv1.SearchProcedurePath,
-			codesearchv1.IndexStatusProcedurePath,
+			codesearchv1connect.CodeSearchServiceSearchProcedure,
+			codesearchv1connect.CodeSearchServiceIndexStatusProcedure,
+			codesearchv1connect.CodeSearchServiceSearchSymbolsProcedure,
 		)
 	})
 
@@ -92,7 +94,9 @@ func runServer(out io.Writer, engine *codesearch.Engine, addr, indexDir string) 
 	ui.kv("addr", addr)
 	ui.kv("index", indexDir)
 	ui.kv("endpoint", searchAPIPath)
-	ui.kv("connect-search", codesearchv1.SearchProcedurePath)
-	ui.kv("connect-status", codesearchv1.IndexStatusProcedurePath)
+	ui.kv("connect-path", connectPath)
+	ui.kv("connect-search", codesearchv1connect.CodeSearchServiceSearchProcedure)
+	ui.kv("connect-status", codesearchv1connect.CodeSearchServiceIndexStatusProcedure)
+	ui.kv("connect-symbols", codesearchv1connect.CodeSearchServiceSearchSymbolsProcedure)
 	return server.ListenAndServe()
 }

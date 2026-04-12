@@ -135,11 +135,11 @@ func TestExtractSymbolsGeneric(t *testing.T) {
 			path: "lib.rs",
 			src:  "pub mod widgets;\npub struct Widget;\npub enum State { Ready }\npub trait Renderable {}\npub fn build() {}\npub const MAX_SIZE: usize = 10;\n",
 			wants: []Symbol{
-				{Name: "widgets", Kind: SymbolKindModule, Language: "rust", Path: "lib.rs", Exported: false},
+				{Name: "widgets", Kind: SymbolKindModule, Language: "rust", Path: "lib.rs", Exported: true},
 				{Name: "Widget", Kind: SymbolKindStruct, Language: "rust", Path: "lib.rs", Exported: true},
 				{Name: "State", Kind: SymbolKindEnum, Language: "rust", Path: "lib.rs", Exported: true},
 				{Name: "Renderable", Kind: SymbolKindTrait, Language: "rust", Path: "lib.rs", Exported: true},
-				{Name: "build", Kind: SymbolKindFunction, Language: "rust", Path: "lib.rs", Exported: false},
+				{Name: "build", Kind: SymbolKindFunction, Language: "rust", Path: "lib.rs", Exported: true},
 				{Name: "MAX_SIZE", Kind: SymbolKindConstant, Language: "rust", Path: "lib.rs", Exported: true},
 			},
 		},
