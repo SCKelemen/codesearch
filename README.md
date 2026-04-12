@@ -1,17 +1,358 @@
 # codesearch
 
-Generic code search and indexing library.
+A high-performance, language-aware code search library written in Go.
 
-## Packages
+`codesearch` is a systems-oriented library for building local or embedded code
+search experiences with serious indexing and code-intelligence primitives. It
+combines fast lexical retrieval, optional semantic ranking, structural symbol
+extraction, LSIF generation, and a transport layer for serving search over HTTP
+and ConnectRPC.
 
-- `trigram/` - Trigram index and search engine
-- `content/` - URI-based content resolution interface
-- `linguist/` - Programming language detection and metadata
-- `gitlog/` - Git log parsing and trailer extraction
+The repository includes both the core Go packages and `csx`, an interactive CLI
+for indexing, searching, serving, and inspecting code indexes.
 
-## Design
+## Features
 
-All content is addressed by URI. The `content.Resolver` interface
-allows plugging in any URI scheme (local files, HTTP, custom protocols).
+- Trigram indexing for fast substring search
+- Fuzzy matching (fzf-inspired algorithm)
+- Exact match with case-insensitive support
+- Hybrid search combining multiple strategies
+- Language-aware structural symbol extraction (Go, TypeScript, JavaScript, Python, Rust, SQL)
+- LSP multiplexer for compiler-quality code intelligence (14 language servers)
+- LSIF 0.4.3 generator for portable code intelligence
+- CEL-based query language for structured filtering
+- ConnectRPC service layer
+- Pluggable store abstraction (memory, file-backed, shard format)
+- Configurable ranking and scoring
+- Interactive TUI CLI (csx)
 
-LSIF/LSP intelligence is in [github.com/SCKelemen/lsp](https://github.com/SCKelemen/lsp).
+## Architecture
+
+The library is organized as a set of focused packages that can be used together
+through the root engine or independently in more specialized applications.
+
+```text
+codesearch (root engine)
+├── trigram/      - Trigram indexing and search
+├── fuzzy/        - Fuzzy matching (fzf algorithm)
+├── exact/        - Exact substring search
+├── hybrid/       - Multi-strategy search combiner
+├── ranking/      - Result scoring and ranking
+├── search/       - Search orchestration
+├── index/        - Document indexing pipeline
+├── content/      - Language detection, binary filtering
+├── linguist/     - GitHub Linguist language colors
+├── gitlog/       - Git commit/trailer parsing
+├── structural/   - Language-aware symbol extraction
+├── celfilter/    - CEL query evaluation
+├── symbol/       - Symbol types and indexing
+├── embedding/    - Embedding interfaces for semantic search
+├── shard/        - Shard format for distributed indexes
+├── store/        - Storage abstraction layer
+│   ├── memory/   - In-memory store
+│   └── file/     - File-backed persistent store
+├── lsp/          - LSP JSON-RPC 2.0 client + multiplexer
+│   └── lsifgen/  - LSIF generator from LSP queries
+├── query/        - Query parsing and planning
+├── proto/        - ConnectRPC service definitions
+│   └── codesearchv1/  - Generated stubs + handler
+├── gen/          - Generated protobuf code
+└── cmd/csx/      - CLI tool
+```
+
+### Search pipeline at a glance
+
+At the top level, `codesearch.Engine` coordinates four main concerns:
+
+1. **Indexing**: files are normalized, language-tagged, and stored in a
+   pluggable backend.
+2. **Lexical retrieval**: trigram postings narrow the candidate set before
+   exact or regex-like matching confirms hits.
+3. **Structural enrichment**: symbol extraction adds definitions, containers,
+   kinds, and export metadata for symbol-aware workflows.
+4. **Fusion and serving**: lexical, semantic, and structural results can be
+   ranked, filtered, and exposed over CLI, JSON, or ConnectRPC.
+
+This architecture makes the project suitable both as an embeddable library and
+as the foundation for a standalone code search service.
+
+## Quick Start
+
+### Install the library
+
+```bash
+go get github.com/SCKelemen/codesearch
+```
+
+### Basic indexing
+
+Use a file-backed engine when you want a reusable on-disk index:
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+
+	"github.com/SCKelemen/codesearch"
+)
+
+func main() {
+	ctx := context.Background()
+
+	engine, err := codesearch.Open("./index")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		_ = engine.Close()
+	}()
+
+	if err := engine.Index(ctx, "./cmd/csx"); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+For ephemeral use cases, `codesearch.New()` creates an in-memory engine.
+
+### Basic search
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/SCKelemen/codesearch"
+)
+
+func main() {
+	ctx := context.Background()
+
+	engine, err := codesearch.Open("./index")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		_ = engine.Close()
+	}()
+
+	results, err := engine.Search(
+		ctx,
+		"multiplexer",
+		codesearch.WithLimit(10),
+		codesearch.WithFilter(`language == "go"`),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, result := range results {
+		fmt.Printf("%s:%d %.3f\n", result.Path, result.Line, result.Score)
+		fmt.Println(result.Snippet)
+	}
+}
+```
+
+### Using the CLI
+
+Install the CLI:
+
+```bash
+go install github.com/SCKelemen/codesearch/cmd/csx@latest
+```
+
+Index a repository:
+
+```bash
+csx index . --output ./index
+```
+
+Search the index:
+
+```bash
+csx search "multiplexer" --index ./index
+```
+
+Launch the interactive TUI:
+
+```bash
+csx interactive --index ./index
+```
+
+If LSP-backed symbol extraction and LSIF generation are available in your
+environment, enable them with the global `--lsp` flag:
+
+```bash
+csx --lsp index . --output ./index
+```
+
+## CLI Usage
+
+The `csx` executable is the operational front end for the repository. It wraps
+local indexing, interactive search, service hosting, and LSIF export in a
+single tool.
+
+### `csx index`
+
+Build a local index for a file or directory.
+
+```bash
+csx index <path> [--output ./index] [--language go,ts] [--embeddings]
+```
+
+Examples:
+
+```bash
+csx index . --output ./index
+csx index ./cmd/csx --output ./index --language go
+csx --lsp index . --output ./index --embeddings
+```
+
+Notes:
+
+- Skips common vendor-like directories such as `.git`, `node_modules`, and `vendor`
+- Filters binary files
+- Can emit `index.lsif` alongside the local index when `--lsp` is enabled
+- Supports deterministic local embeddings when an embedder is configured
+
+### `csx search`
+
+Search a local index or a remote service.
+
+```bash
+csx search [query] [--index ./index] [--limit 20] [--mode hybrid|lexical|semantic] [--json] [--remote <addr>]
+```
+
+Examples:
+
+```bash
+csx search "NewService" --index ./index
+csx search "hoverResult" --index ./index --mode lexical --json
+csx search "symbol extraction" --remote 127.0.0.1:8080
+```
+
+Notes:
+
+- Omitting the query launches interactive search
+- `--mode` supports lexical, semantic, and hybrid retrieval
+- `--remote` first attempts ConnectRPC and then falls back to a JSON endpoint
+
+### `csx serve`
+
+Serve a local index over HTTP and ConnectRPC.
+
+```bash
+csx serve [--addr :8080] [--index ./index]
+```
+
+Examples:
+
+```bash
+csx serve --index ./index --addr :8080
+curl 'http://127.0.0.1:8080/api/search?q=multiplexer&mode=lexical&limit=10'
+```
+
+The server exposes:
+
+- `GET /api/search` for JSON search responses
+- ConnectRPC procedures for search, index status, and symbol search
+
+### `csx lsif`
+
+Generate LSIF JSON Lines output from LSP-backed analysis.
+
+```bash
+csx lsif <path> [--output <file>]
+```
+
+Examples:
+
+```bash
+csx lsif . --output ./index/index.lsif
+csx lsif ./cmd/csx
+```
+
+### `csx interactive`
+
+Open the full-screen terminal interface.
+
+```bash
+csx interactive [--index ./index]
+```
+
+This mode is useful when you want to browse ranked results quickly, inspect
+snippets, and open a preview without switching tools.
+
+## LSP Support
+
+`codesearch` ships with a built-in LSP multiplexer that starts any supported
+server present on `PATH` and routes files to the best available client.
+
+| Server ID | Command | Primary file types |
+| --- | --- | --- |
+| `typescript` | `typescript-language-server --stdio` | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.mts` |
+| `go` | `gopls` | `.go` |
+| `rust` | `rust-analyzer` | `.rs` |
+| `python` | `pyright-langserver --stdio` | `.py` |
+| `html` | `vscode-html-language-server --stdio` | `.html`, `.htm` |
+| `css` | `vscode-css-language-server --stdio` | `.css`, `.scss`, `.less` |
+| `sql` | `sql-language-server up --method stdio` | `.sql`, `.pgsql` |
+| `postgres` | `postgrestools lsp` | `.sql`, `.pgsql` |
+| `prisma` | `prisma-language-server --stdio` | `.prisma` |
+| `json` | `vscode-json-language-server --stdio` | `.json`, `.jsonc` |
+| `toml` | `taplo lsp stdio` | `.toml` |
+| `tailwind` | `tailwindcss-language-server --stdio` | `.css`, `.scss`, `.less`, `.html`, `.tsx`, `.jsx` |
+| `eslint` | `vscode-eslint-language-server --stdio` | `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.mts` |
+| `biome` | `biome lsp-proxy` | `.js`, `.jsx`, `.ts`, `.tsx`, `.json`, `.jsonc` |
+
+### What LSP mode adds
+
+When enabled, the LSP stack improves the quality of symbol extraction and makes
+additional intelligence available for LSIF export, including:
+
+- document symbols
+- definitions
+- references
+- hover information
+- language-specific ranges and containers
+
+## Benchmarks
+
+Run the full benchmark suite with Go's built-in benchmarking support:
+
+```bash
+go test ./... -bench=. -benchmem
+```
+
+This repository includes focused benchmarks for core subsystems such as trigram
+search, exact search, fuzzy matching, ranking, indexing, search orchestration,
+and shard handling.
+
+## Security
+
+LSP-derived data should be treated as trusted build-time or indexing-time input,
+not untrusted user input.
+
+**Important:** LSP data must come from trusted infrastructure, never from
+user-controlled environments.
+
+Practical implications:
+
+- run language servers in controlled development or CI environments
+- do not accept arbitrary LSIF or LSP responses from end users
+- isolate index generation from hostile repositories when operating a shared service
+- validate deployment boundaries if search indexes are built from multi-tenant sources
+
+## License
+
+No `LICENSE` file is currently present in this repository.
+
+Until a license is added, you should assume the code is **not** available for
+unrestricted reuse or redistribution. If you intend to publish or consume this
+project as a dependency outside its current environment, add an explicit license
+file first.
