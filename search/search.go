@@ -154,6 +154,7 @@ func (e *Engine) searchRegex(ctx context.Context, req Request) ([]Result, error)
 	opts := trigram.SearchOptions{
 		WorkspaceID:  req.WorkspaceID,
 		RepositoryID: req.RepositoryID,
+		Language:     req.Language,
 		MaxResults:   req.MaxResults,
 	}
 

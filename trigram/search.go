@@ -12,6 +12,7 @@ type SearchOptions struct {
 	WorkspaceID  string
 	RepositoryID string
 	IndexID      string
+	Language     string
 	MaxResults   int
 }
 
@@ -94,6 +95,9 @@ func matchesOptions(posting Posting, opts SearchOptions) bool {
 		return false
 	}
 	if opts.IndexID != "" && posting.IndexID != opts.IndexID {
+		return false
+	}
+	if opts.Language != "" && posting.Language != opts.Language {
 		return false
 	}
 	return true

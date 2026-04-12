@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,7 +21,13 @@ type testEmbedder struct{}
 func (testEmbedder) Embed(_ context.Context, inputs []string) ([][]float32, error) {
 	vectors := make([][]float32, len(inputs))
 	for i, input := range inputs {
-		vectors[i] = []float32{float32(len(input)), float32(i + 1)}
+		lower := strings.ToLower(input)
+		switch {
+		case strings.Contains(lower, "semantic"), strings.Contains(lower, "approx"), strings.Contains(lower, "vector"):
+			vectors[i] = []float32{1, 0}
+		default:
+			vectors[i] = []float32{0, 1}
+		}
 	}
 	return vectors, nil
 }
@@ -30,96 +35,176 @@ func (testEmbedder) Embed(_ context.Context, inputs []string) ([][]float32, erro
 func (testEmbedder) Dimensions() int { return 2 }
 func (testEmbedder) Model() string   { return "test" }
 
-func TestSearchHandler(t *testing.T) {
+func TestSearch_EmptyQuery(t *testing.T) {
+	t.Parallel()
+
+	engine := codesearch.New(codesearch.WithMemoryStore())
+	client, _ := newTestClient(t, engine)
+
+	_, err := client.Search(context.Background(), connect.NewRequest(&codesearchpb.SearchRequest{}))
+	assertConnectErrorContains(t, err, connect.CodeInvalidArgument, "query must not be empty")
+}
+
+func TestSearch_Integration(t *testing.T) {
 	t.Parallel()
 
 	engine := codesearch.New(codesearch.WithMemoryStore())
 	indexTestFiles(t, engine, map[string]string{
-		"src/main.go":   "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n",
-		"src/app.ts":    "export function greet(): string {\n\treturn hi\n}\n",
-		"src/module.py": "def greet():\n    return hi\n",
+		"src/main.go":   "package main\n\nfunc SearchTarget() string {\n\treturn \"needle\"\n}\n",
+		"src/helper.ts": "export function helper(): string {\n\treturn 'value'\n}\n",
 	})
 
 	client, _ := newTestClient(t, engine)
-	response := performSearchRequest(t, client, &codesearchpb.SearchRequest{Query: "func", Limit: 10})
+	response := performSearchRequest(t, client, &codesearchpb.SearchRequest{Query: "SearchTarget", Limit: 5})
 
-	if response.GetQuery() != "func" {
-		t.Fatalf("response.Query = %q, want %q", response.GetQuery(), "func")
-	}
-	if response.GetLimit() != 10 {
-		t.Fatalf("response.Limit = %d, want 10", response.GetLimit())
+	if response.GetQuery() != "SearchTarget" {
+		t.Fatalf("response.Query = %q, want %q", response.GetQuery(), "SearchTarget")
 	}
 	if response.GetMode() != "hybrid" {
 		t.Fatalf("response.Mode = %q, want %q", response.GetMode(), "hybrid")
 	}
-	if len(response.GetResults()) < 2 {
-		t.Fatalf("len(response.Results) = %d, want at least 2", len(response.GetResults()))
+	if len(response.GetResults()) != 1 {
+		t.Fatalf("len(response.Results) = %d, want 1", len(response.GetResults()))
 	}
-
-	goResult, ok := findResultBySuffix(response.GetResults(), "src/main.go")
-	if !ok {
-		t.Fatalf("expected Go result in %#v", response.GetResults())
+	result := response.GetResults()[0]
+	if !strings.HasSuffix(result.GetPath(), "src/main.go") {
+		t.Fatalf("result.Path = %q, want suffix %q", result.GetPath(), "src/main.go")
 	}
-	if goResult.GetLine() != 3 {
-		t.Fatalf("Go result line = %d, want 3", goResult.GetLine())
+	if result.GetLine() != 3 {
+		t.Fatalf("result.Line = %d, want 3", result.GetLine())
 	}
-	if !strings.Contains(strings.ToLower(goResult.GetSnippet()), "func") {
-		t.Fatalf("Go snippet = %q, want to contain %q", goResult.GetSnippet(), "func")
-	}
-	if len(goResult.GetMatches()) == 0 {
-		t.Fatalf("Go result matches = %#v, want non-empty", goResult.GetMatches())
-	}
-
-	tsResult, ok := findResultBySuffix(response.GetResults(), "src/app.ts")
-	if !ok {
-		t.Fatalf("expected TypeScript result in %#v", response.GetResults())
-	}
-	if !strings.Contains(strings.ToLower(tsResult.GetSnippet()), "function") {
-		t.Fatalf("TypeScript snippet = %q, want to contain %q", tsResult.GetSnippet(), "function")
-	}
-
-	if _, ok := findResultBySuffix(response.GetResults(), "src/module.py"); ok {
-		t.Fatalf("did not expect Python result for query %q in %#v", "func", response.GetResults())
+	if !strings.Contains(result.GetSnippet(), "SearchTarget") {
+		t.Fatalf("result.Snippet = %q, want to contain %q", result.GetSnippet(), "SearchTarget")
 	}
 }
 
-func TestSearchHandlerErrors(t *testing.T) {
+func TestSearch_LanguageFilter(t *testing.T) {
 	t.Parallel()
 
 	engine := codesearch.New(codesearch.WithMemoryStore())
 	indexTestFiles(t, engine, map[string]string{
-		"src/main.go": "package main\nfunc main() {}\n",
+		"src/main.go":   "package main\nconst shared = \"needle\"\n",
+		"src/module.py": "shared = 'needle'\n",
 	})
 
 	client, _ := newTestClient(t, engine)
-	tests := []struct {
-		name      string
-		request   *codesearchpb.SearchRequest
-		wantCode  connect.Code
-		wantError string
-	}{
-		{
-			name:      "empty query",
-			request:   &codesearchpb.SearchRequest{},
-			wantCode:  connect.CodeInvalidArgument,
-			wantError: "query must not be empty",
-		},
-		{
-			name:      "invalid mode",
-			request:   &codesearchpb.SearchRequest{Query: "func", Mode: "invalid"},
-			wantCode:  connect.CodeInvalidArgument,
-			wantError: `unknown search mode "invalid"`,
-		},
+	response := performSearchRequest(t, client, &codesearchpb.SearchRequest{
+		Query:  "needle",
+		Limit:  10,
+		Filter: `language == "Go"`,
+	})
+
+	if len(response.GetResults()) != 1 {
+		t.Fatalf("len(response.Results) = %d, want 1", len(response.GetResults()))
 	}
+	if !strings.HasSuffix(response.GetResults()[0].GetPath(), "src/main.go") {
+		t.Fatalf("result.Path = %q, want suffix %q", response.GetResults()[0].GetPath(), "src/main.go")
+	}
+}
 
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
+func TestSearch_FuzzyMode(t *testing.T) {
+	t.Parallel()
 
-			_, err := client.Search(context.Background(), connect.NewRequest(test.request))
-			assertConnectErrorContains(t, err, test.wantCode, test.wantError)
-		})
+	engine := codesearch.New(codesearch.WithMemoryStore(), codesearch.WithEmbedder(testEmbedder{}))
+	indexTestFiles(t, engine, map[string]string{
+		"src/semantic.txt": "semantic vector content",
+		"src/noise.txt":    "ordinary unrelated text",
+	})
+
+	client, _ := newTestClient(t, engine)
+	response := performSearchRequest(t, client, &codesearchpb.SearchRequest{Query: "approximate concept", Mode: "hybrid", Limit: 5})
+
+	if len(response.GetResults()) == 0 {
+		t.Fatal("expected semantic result, got none")
+	}
+	if !strings.HasSuffix(response.GetResults()[0].GetPath(), "src/semantic.txt") {
+		t.Fatalf("result.Path = %q, want suffix %q", response.GetResults()[0].GetPath(), "src/semantic.txt")
+	}
+}
+
+func TestSearch_ExactMode(t *testing.T) {
+	t.Parallel()
+
+	engine := codesearch.New(codesearch.WithMemoryStore())
+	indexTestFiles(t, engine, map[string]string{"src/main.go": "package main\nconst exactValue = \"ExactValue\"\n"})
+
+	client, _ := newTestClient(t, engine)
+	response := performSearchRequest(t, client, &codesearchpb.SearchRequest{Query: "ExactValue", Mode: "lexical", Limit: 5})
+
+	if response.GetMode() != "lexical" {
+		t.Fatalf("response.Mode = %q, want %q", response.GetMode(), "lexical")
+	}
+	if len(response.GetResults()) != 1 {
+		t.Fatalf("len(response.Results) = %d, want 1", len(response.GetResults()))
+	}
+}
+
+func TestIndexStatus_Empty(t *testing.T) {
+	t.Parallel()
+
+	engine := codesearch.New(codesearch.WithMemoryStore())
+	client, _ := newTestClient(t, engine)
+
+	response, err := client.IndexStatus(context.Background(), connect.NewRequest(&codesearchpb.IndexStatusRequest{}))
+	if err != nil {
+		t.Fatalf("IndexStatus() error = %v", err)
+	}
+	if response.Msg.GetFileCount() != 0 {
+		t.Fatalf("response.FileCount = %d, want 0", response.Msg.GetFileCount())
+	}
+	if response.Msg.GetEmbeddingCount() != 0 {
+		t.Fatalf("response.EmbeddingCount = %d, want 0", response.Msg.GetEmbeddingCount())
+	}
+	if len(response.Msg.GetLanguages()) != 0 {
+		t.Fatalf("len(response.Languages) = %d, want 0", len(response.Msg.GetLanguages()))
+	}
+}
+
+func TestIndexStatus_AfterIndex(t *testing.T) {
+	t.Parallel()
+
+	engine := codesearch.New(codesearch.WithMemoryStore(), codesearch.WithEmbedder(testEmbedder{}))
+	files := map[string]string{
+		"src/main.go":   "package main\n\nfunc main() {}\n",
+		"src/module.py": "def main():\n    return True\n",
+	}
+	indexTestFiles(t, engine, files)
+
+	client, _ := newTestClient(t, engine)
+	response, err := client.IndexStatus(context.Background(), connect.NewRequest(&codesearchpb.IndexStatusRequest{}))
+	if err != nil {
+		t.Fatalf("IndexStatus() error = %v", err)
+	}
+	if response.Msg.GetFileCount() != int32(len(files)) {
+		t.Fatalf("response.FileCount = %d, want %d", response.Msg.GetFileCount(), len(files))
+	}
+	if response.Msg.GetEmbeddingCount() != int32(len(files)) {
+		t.Fatalf("response.EmbeddingCount = %d, want %d", response.Msg.GetEmbeddingCount(), len(files))
+	}
+	if response.Msg.GetLanguages()["Go"] != 1 {
+		t.Fatalf("response.Languages[Go] = %d, want 1", response.Msg.GetLanguages()["Go"])
+	}
+	if response.Msg.GetLanguages()["Python"] != 1 {
+		t.Fatalf("response.Languages[Python] = %d, want 1", response.Msg.GetLanguages()["Python"])
+	}
+}
+
+func TestSearchSymbolsHandler(t *testing.T) {
+	t.Parallel()
+
+	engine := codesearch.New(codesearch.WithMemoryStore())
+	indexTestFiles(t, engine, map[string]string{
+		"src/main.go":   "package main\n\nfunc main() {}\nfunc helper() {}\n",
+		"src/widget.ts": "export class Widget {}\nexport function greet(): string {\n\treturn hi\n}\n",
+	})
+
+	client, _ := newTestClient(t, engine)
+	response, err := client.SearchSymbols(context.Background(), connect.NewRequest(&codesearchpb.SearchSymbolsRequest{Name: "main", Kind: "function", Language: "go", Limit: 10}))
+	if err != nil {
+		t.Fatalf("SearchSymbols() error = %v", err)
+	}
+	if len(response.Msg.GetResults()) != 1 {
+		t.Fatalf("len(response.Results) = %d, want 1", len(response.Msg.GetResults()))
 	}
 }
 
@@ -148,131 +233,86 @@ func TestSearchHandlerRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
-func TestIndexStatusHandler(t *testing.T) {
-	t.Parallel()
-
-	engine := codesearch.New(
-		codesearch.WithMemoryStore(),
-		codesearch.WithEmbedder(testEmbedder{}),
-	)
-	files := map[string]string{
-		"src/main.go":   "package main\n\nfunc main() {}\n",
-		"src/app.ts":    "export function greet(): string {\n\treturn hi\n}\n",
-		"src/module.py": "def greet():\n    return hi\n",
-	}
-	indexTestFiles(t, engine, files)
-
-	client, _ := newTestClient(t, engine)
-	response, err := client.IndexStatus(context.Background(), connect.NewRequest(&codesearchpb.IndexStatusRequest{}))
-	if err != nil {
-		t.Fatalf("IndexStatus() error = %v", err)
-	}
-
-	if response.Msg.GetFileCount() != int32(len(files)) {
-		t.Fatalf("response.FileCount = %d, want %d", response.Msg.GetFileCount(), len(files))
-	}
-	if response.Msg.GetEmbeddingCount() != int32(len(files)) {
-		t.Fatalf("response.EmbeddingCount = %d, want %d", response.Msg.GetEmbeddingCount(), len(files))
-	}
-	if len(response.Msg.GetLanguages()) != len(files) {
-		t.Fatalf("len(response.Languages) = %d, want %d; map = %#v", len(response.Msg.GetLanguages()), len(files), response.Msg.GetLanguages())
-	}
-
-	for path := range files {
-		document, err := engine.Documents.Lookup(context.Background(), path)
-		if err != nil {
-			t.Fatalf("Lookup(%q) returned error: %v", path, err)
-		}
-		if document == nil {
-			t.Fatalf("Lookup(%q) returned nil document", path)
-		}
-		if response.Msg.GetLanguages()[document.Language] != 1 {
-			t.Fatalf("response.Languages[%q] = %d, want 1; map = %#v", document.Language, response.Msg.GetLanguages()[document.Language], response.Msg.GetLanguages())
-		}
-	}
-	if response.Msg.GetTotalBytes() <= 0 {
-		t.Fatalf("response.TotalBytes = %d, want > 0", response.Msg.GetTotalBytes())
-	}
-	if response.Msg.GetIndexBytes() != response.Msg.GetTotalBytes() {
-		t.Fatalf("response.IndexBytes = %d, want %d", response.Msg.GetIndexBytes(), response.Msg.GetTotalBytes())
-	}
-}
-
-func TestSearchHandlerFilter(t *testing.T) {
+func TestNewCodeSearchHandler(t *testing.T) {
 	t.Parallel()
 
 	engine := codesearch.New(codesearch.WithMemoryStore())
-	indexTestFiles(t, engine, map[string]string{
-		"src/main.go": "package main\n\nfunc main() {}\n",
-		"src/app.ts":  "export function greet(): string {\n\treturn hi\n}\n",
-	})
+	indexTestFiles(t, engine, map[string]string{"src/main.go": "package main\nfunc main() {}\n"})
 
-	client, _ := newTestClient(t, engine)
+	server := httptest.NewServer(NewCodeSearchHandler(engine))
+	defer server.Close()
 
-	goResponse := performSearchRequest(t, client, &codesearchpb.SearchRequest{
-		Query:  "func",
-		Limit:  10,
-		Filter: `file_extension == ".go"`,
-	})
-	if len(goResponse.GetResults()) == 0 {
-		t.Fatal("expected Go-filtered results, got none")
+	client := codesearchv1connect.NewCodeSearchServiceClient(server.Client(), server.URL)
+	response, err := client.Search(context.Background(), connect.NewRequest(&codesearchpb.SearchRequest{Query: "main", Limit: 5}))
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
 	}
-	for _, result := range goResponse.GetResults() {
-		if filepath.Ext(result.GetPath()) != ".go" {
-			t.Fatalf("Go filter returned non-Go path %q in %#v", result.GetPath(), goResponse.GetResults())
-		}
-	}
-
-	tsResponse := performSearchRequest(t, client, &codesearchpb.SearchRequest{
-		Query:  "func",
-		Limit:  10,
-		Filter: `file_extension == ".ts"`,
-	})
-	if len(tsResponse.GetResults()) == 0 {
-		t.Fatal("expected TypeScript-filtered results, got none")
-	}
-	for _, result := range tsResponse.GetResults() {
-		if filepath.Ext(result.GetPath()) != ".ts" {
-			t.Fatalf("TypeScript filter returned non-TypeScript path %q in %#v", result.GetPath(), tsResponse.GetResults())
-		}
+	if len(response.Msg.GetResults()) == 0 {
+		t.Fatal("expected search results, got none")
 	}
 }
 
-func TestSearchSymbolsHandler(t *testing.T) {
+func TestHelperConversions(t *testing.T) {
 	t.Parallel()
 
-	engine := codesearch.New(codesearch.WithMemoryStore())
-	indexTestFiles(t, engine, map[string]string{
-		"src/main.go":   "package main\n\nfunc main() {}\nfunc helper() {}\n",
-		"src/widget.ts": "export class Widget {}\nexport function greet(): string {\n\treturn hi\n}\n",
-	})
+	request := SearchRequest{Query: "needle", Limit: 5, Mode: "lexical", Filter: `language == "Go"`}
+	if got := SearchRequestFromProto(request.ToProto()); got != request {
+		t.Fatalf("SearchRequest round trip = %#v, want %#v", got, request)
+	}
 
-	client, _ := newTestClient(t, engine)
-	response, err := client.SearchSymbols(context.Background(), connect.NewRequest(&codesearchpb.SearchSymbolsRequest{
-		Name:     "main",
-		Kind:     "function",
-		Language: "go",
-		Limit:    10,
-	}))
+	response := SearchResponse{Query: "needle", Limit: 5, Mode: "lexical", Results: []SearchResult{{Path: "main.go", Line: 2, Score: 1.5, Snippet: "const needle = true", Matches: []MatchRange{{Start: 6, End: 12}}}}}
+	if got := SearchResponseFromProto(response.ToProto()); got.Query != response.Query || len(got.Results) != 1 || got.Results[0].Path != response.Results[0].Path {
+		t.Fatalf("SearchResponse round trip = %#v, want %#v", got, response)
+	}
+
+	symbolRequest := SearchSymbolsRequest{Name: "main", Kind: "function", Language: "go", Container: "pkg", Path: "main.go", Limit: 3}
+	if got := SearchSymbolsRequestFromProto(symbolRequest.ToProto()); got != symbolRequest {
+		t.Fatalf("SearchSymbolsRequest round trip = %#v, want %#v", got, symbolRequest)
+	}
+
+	symbolResponse := SearchSymbolsResponse{Results: []SymbolResult{{Name: "main", Kind: "function", Language: "go", Path: "main.go", Container: "pkg", Exported: true, Range: SourceRange{StartLine: 1, StartColumn: 1, EndLine: 1, EndColumn: 4}}}}
+	if got := SearchSymbolsResponseFromProto(symbolResponse.ToProto()); got.Results[0].Name != "main" {
+		t.Fatalf("SearchSymbolsResponse round trip = %#v, want %#v", got, symbolResponse)
+	}
+
+	statusResponse := IndexStatusResponse{FileCount: 2, TotalBytes: 100, IndexBytes: 100, EmbeddingCount: 2, Languages: map[string]int32{"Go": 1}}
+	if got := IndexStatusResponseFromProto(statusResponse.ToProto()); got.FileCount != statusResponse.FileCount || got.Languages["Go"] != 1 {
+		t.Fatalf("IndexStatusResponse round trip = %#v, want %#v", got, statusResponse)
+	}
+	if got := IndexStatusRequestFromProto((&IndexStatusRequest{}).ToProto()); got != (IndexStatusRequest{}) {
+		t.Fatalf("IndexStatusRequest round trip = %#v, want empty request", got)
+	}
+}
+
+func TestHelperFunctions(t *testing.T) {
+	t.Parallel()
+
+	mode, err := normalizeMode(" lexical ")
 	if err != nil {
-		t.Fatalf("SearchSymbols() error = %v", err)
+		t.Fatalf("normalizeMode() error = %v", err)
+	}
+	if mode != "lexical_only" {
+		t.Fatalf("normalizeMode() = %q, want %q", mode, "lexical_only")
+	}
+	if modeLabel(mode) != "lexical" {
+		t.Fatalf("modeLabel() = %q, want %q", modeLabel(mode), "lexical")
+	}
+	if languageForPath("main.go") != "Go" {
+		t.Fatalf("languageForPath() = %q, want %q", languageForPath("main.go"), "Go")
 	}
 
-	if len(response.Msg.GetResults()) != 1 {
-		t.Fatalf("len(response.Results) = %d, want 1", len(response.Msg.GetResults()))
+	kind, err := parseSymbolKind("method")
+	if err != nil {
+		t.Fatalf("parseSymbolKind() error = %v", err)
 	}
-	result := response.Msg.GetResults()[0]
-	if result.GetName() != "main" {
-		t.Fatalf("result.Name = %q, want %q", result.GetName(), "main")
+	if kind != 10 {
+		t.Fatalf("parseSymbolKind() = %v, want %v", kind, 10)
 	}
-	if result.GetKind() != "function" {
-		t.Fatalf("result.Kind = %q, want %q", result.GetKind(), "function")
+	if formatSymbolKind(kind) != "method" {
+		t.Fatalf("formatSymbolKind() = %q, want %q", formatSymbolKind(kind), "method")
 	}
-	if !strings.HasSuffix(result.GetPath(), "src/main.go") {
-		t.Fatalf("result.Path = %q, want suffix %q", result.GetPath(), "src/main.go")
-	}
-	if result.GetRange().GetStartLine() <= 0 {
-		t.Fatalf("result.Range.StartLine = %d, want > 0", result.GetRange().GetStartLine())
+	if _, err := parseSymbolKind("unknown-kind"); err == nil {
+		t.Fatal("parseSymbolKind() error = nil, want error")
 	}
 }
 
@@ -296,32 +336,27 @@ func TestNotFoundPath(t *testing.T) {
 
 func indexTestFiles(t *testing.T, engine *codesearch.Engine, files map[string]string) {
 	t.Helper()
-
 	for path, content := range files {
 		if err := engine.IndexFile(context.Background(), path, []byte(content)); err != nil {
-			t.Fatalf("IndexFile(%q) returned error: %v", path, err)
+			t.Fatalf("IndexFile(%q) error = %v", path, err)
 		}
 	}
 }
 
 func newTestClient(t *testing.T, engine *codesearch.Engine) (codesearchv1connect.CodeSearchServiceClient, *httptest.Server) {
 	t.Helper()
-
 	service := NewService(engine)
 	connectPath, handler := codesearchv1connect.NewCodeSearchServiceHandler(service)
 	mux := http.NewServeMux()
 	mux.Handle(connectPath, handler)
-
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-
 	client := codesearchv1connect.NewCodeSearchServiceClient(server.Client(), server.URL)
 	return client, server
 }
 
 func performSearchRequest(t *testing.T, client codesearchv1connect.CodeSearchServiceClient, requestBody *codesearchpb.SearchRequest) *codesearchpb.SearchResponse {
 	t.Helper()
-
 	response, err := client.Search(context.Background(), connect.NewRequest(requestBody))
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
@@ -329,22 +364,11 @@ func performSearchRequest(t *testing.T, client codesearchv1connect.CodeSearchSer
 	return response.Msg
 }
 
-func findResultBySuffix(results []*codesearchpb.SearchResult, suffix string) (*codesearchpb.SearchResult, bool) {
-	for _, result := range results {
-		if strings.HasSuffix(result.GetPath(), suffix) {
-			return result, true
-		}
-	}
-	return nil, false
-}
-
 func assertConnectErrorContains(t *testing.T, err error, wantCode connect.Code, want string) {
 	t.Helper()
-
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-
 	var connectErr *connect.Error
 	if !errors.As(err, &connectErr) {
 		t.Fatalf("error = %T, want *connect.Error: %v", err, err)

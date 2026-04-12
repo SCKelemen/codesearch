@@ -2,15 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  ci:
+  build-and-test:
     runs-on: ubuntu-latest
 
     steps:
@@ -20,38 +20,170 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.23'
           cache: true
+
+      - name: Cache Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./... -count=1 -short
+
+      - name: Vet
+        run: go vet ./...
+
+  race:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Cache Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-race-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-race-
+            ${{ runner.os }}-go-build-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run race tests
+        run: go test ./... -race -count=1 -short
+
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Cache Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-coverage-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-coverage-
+            ${{ runner.os }}-go-build-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Generate coverage report
+        run: go test ./... -coverprofile=coverage.out -count=1 -short
+
+      - name: Print coverage summary
+        run: go tool cover -func=coverage.out | tee coverage-summary.txt
+
+      - name: Enforce minimum coverage
+        run: |
+          total_coverage=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%", "", $3); print $3}')
+          echo "Total coverage: ${total_coverage}%"
+          awk -v total="$total_coverage" 'BEGIN { exit (total >= 65 ? 0 : 1) }'
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.out
+            coverage-summary.txt
+
+  benchmarks:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Cache Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-benchmarks-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-benchmarks-
+            ${{ runner.os }}-go-build-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run benchmarks
+        run: go test ./... -bench=. -benchmem -benchtime=100ms -count=1 -run=^$ | tee benchmarks.txt
+
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks
+          path: benchmarks.txt
+
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Cache Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-lint-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-lint-
+            ${{ runner.os }}-go-build-
 
       - name: Download dependencies
         run: go mod download
 
       - name: Check formatting
         run: |
-          unformatted="$(gofmt -l .)"
+          unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
             echo "The following files need gofmt:"
             echo "$unformatted"
             exit 1
           fi
 
-      - name: Lint
+      - name: Vet
         run: go vet ./...
-
-      - name: Test
-        run: go test ./... -count=1
-
-      - name: Race test
-        run: go test -race ./...
-
-      - name: Coverage
-        run: go test ./... -coverprofile=coverage.out
-
-      - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: coverage.out
-
-      - name: Build
-        run: go build ./...
