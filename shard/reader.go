@@ -192,13 +192,17 @@ func (s *Shard) loadVectors() (*memory.VectorStore, error) {
 		if s.vectors != nil {
 			return
 		}
+		s.vectors = memory.NewVectorStore()
+		if !s.header.Sections.Vectors.present() {
+			return
+		}
 		var vectors []store.StoredVector
 		s.vectorsErr = json.Unmarshal(sectionBytes(s.raw, s.header.Sections.Vectors), &vectors)
-		if s.vectorsErr == nil {
-			s.vectors = memory.NewVectorStore()
-			for _, vector := range vectors {
-				_ = s.vectors.Put(context.Background(), vector)
-			}
+		if s.vectorsErr != nil {
+			return
+		}
+		for _, vector := range vectors {
+			_ = s.vectors.Put(context.Background(), vector)
 		}
 	})
 	return s.vectors, s.vectorsErr
@@ -209,19 +213,23 @@ func (s *Shard) loadSymbols() (*memory.SymbolStore, error) {
 		if s.symbols != nil {
 			return
 		}
+		s.symbols = memory.NewSymbolStore()
+		if !s.header.Sections.Symbols.present() {
+			return
+		}
 		var payload struct {
 			Symbols    []store.Symbol    `json:"symbols"`
 			References []store.Reference `json:"references"`
 		}
 		s.symbolsErr = json.Unmarshal(sectionBytes(s.raw, s.header.Sections.Symbols), &payload)
-		if s.symbolsErr == nil {
-			s.symbols = memory.NewSymbolStore()
-			for _, symbol := range payload.Symbols {
-				_ = s.symbols.Put(context.Background(), symbol)
-			}
-			for _, ref := range payload.References {
-				_ = s.symbols.PutReference(context.Background(), ref)
-			}
+		if s.symbolsErr != nil {
+			return
+		}
+		for _, symbol := range payload.Symbols {
+			_ = s.symbols.Put(context.Background(), symbol)
+		}
+		for _, ref := range payload.References {
+			_ = s.symbols.PutReference(context.Background(), ref)
 		}
 	})
 	return s.symbols, s.symbolsErr
