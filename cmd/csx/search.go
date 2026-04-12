@@ -71,7 +71,7 @@ func newSearchCommand() *clix.Command {
 			if err != nil {
 				return err
 			}
-			return runInteractive(ctx, ctx.App.Out, indexDir)
+			return runInteractive(ctx.App.Out, indexDir, limit, searchMode)
 		}
 
 		response, err := runSearch(ctx, indexDir, remote, searchRequest{Query: ctx.Args[0], Limit: limit, Mode: mode})

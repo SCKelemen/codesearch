@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"connectrpc.com/connect"
 	"github.com/SCKelemen/codesearch"
 	"github.com/SCKelemen/codesearch/hybrid"
 	"github.com/SCKelemen/codesearch/linguist"
@@ -181,7 +182,9 @@ func decodeJSONBody(r *http.Request, target any) error {
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, value any) error {
+	w.Header().Set("Connect-Protocol-Version", "1")
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Connect-Protocol", connect.ProtocolConnect)
 	w.WriteHeader(statusCode)
 	return json.NewEncoder(w).Encode(value)
 }
