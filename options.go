@@ -1,6 +1,8 @@
 package codesearch
 
 import (
+	"context"
+
 	"github.com/SCKelemen/codesearch/embedding"
 	"github.com/SCKelemen/codesearch/hybrid"
 	"github.com/SCKelemen/codesearch/store"
@@ -129,9 +131,13 @@ func resolveSearchOptions(opts ...SearchOption) searchOptions {
 // IndexOption configures indexing behavior.
 type IndexOption func(*indexOptions)
 
+// SymbolExtractor overrides structural symbol extraction during indexing.
+type SymbolExtractor func(ctx context.Context, path string, language string, content []byte) ([]structural.Symbol, error)
+
 type indexOptions struct {
-	language   string
-	embeddings bool
+	language        string
+	embeddings      bool
+	symbolExtractor SymbolExtractor
 }
 
 // WithLanguage overrides language detection during indexing.
@@ -145,6 +151,13 @@ func WithLanguage(language string) IndexOption {
 func WithEmbeddings(enabled bool) IndexOption {
 	return func(opts *indexOptions) {
 		opts.embeddings = enabled
+	}
+}
+
+// WithSymbolExtractor overrides structural symbol extraction during indexing.
+func WithSymbolExtractor(extractor SymbolExtractor) IndexOption {
+	return func(opts *indexOptions) {
+		opts.symbolExtractor = extractor
 	}
 }
 

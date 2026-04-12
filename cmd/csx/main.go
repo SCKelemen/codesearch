@@ -10,7 +10,10 @@ import (
 	clixversion "github.com/SCKelemen/clix/ext/version"
 )
 
-var version = "dev"
+var (
+	version = "dev"
+	useLSP  bool
+)
 
 func main() {
 	app := newApp()
@@ -32,6 +35,7 @@ func newApp() *clix.App {
 	}
 	root.Children = []*clix.Command{
 		newIndexCommand(),
+		newLSIFCommand(),
 		newSearchCommand(),
 		newInteractiveCommand(),
 		newServeCommand(),
@@ -39,6 +43,10 @@ func newApp() *clix.App {
 	}
 
 	app.Root = root
+	app.Flags().BoolVar(clix.BoolVarOptions{
+		FlagOptions: clix.FlagOptions{Name: "lsp", Usage: "Start language servers for compiler-quality indexing"},
+		Value:       &useLSP,
+	})
 	app.AddExtension(clixhelp.Extension{})
 	app.AddExtension(clixversion.Extension{Version: version})
 	return app

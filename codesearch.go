@@ -272,7 +272,7 @@ func (e *Engine) indexDocument(ctx context.Context, path string, content []byte,
 		}
 	}
 
-	if err := e.indexSymbols(ctx, doc); err != nil {
+	if err := e.indexSymbols(ctx, doc, opts); err != nil {
 		return err
 	}
 
@@ -395,7 +395,7 @@ func (e *Engine) SearchSymbols(ctx context.Context, query structural.SymbolQuery
 			return nil, err
 		}
 
-		symbols, err := extractStructuralSymbols(doc.Path, doc.Language, doc.Content)
+		symbols, err := extractStructuralSymbols(ctx, doc.Path, doc.Language, doc.Content)
 		if err != nil {
 			return nil, err
 		}
@@ -877,8 +877,12 @@ func (e *Engine) removeDocumentSymbols(ctx context.Context, documentID string) e
 	return nil
 }
 
-func (e *Engine) indexSymbols(ctx context.Context, doc store.Document) error {
-	symbols, err := extractStructuralSymbols(doc.Path, doc.Language, doc.Content)
+func (e *Engine) indexSymbols(ctx context.Context, doc store.Document, opts indexOptions) error {
+	extractor := opts.symbolExtractor
+	if extractor == nil {
+		extractor = extractStructuralSymbols
+	}
+	symbols, err := extractor(ctx, doc.Path, doc.Language, doc.Content)
 	if err != nil {
 		return err
 	}
@@ -895,14 +899,13 @@ func (e *Engine) indexSymbols(ctx context.Context, doc store.Document) error {
 	return nil
 }
 
-func extractStructuralSymbols(path string, language string, content []byte) ([]structural.Symbol, error) {
+func extractStructuralSymbols(ctx context.Context, path string, language string, content []byte) ([]structural.Symbol, error) {
+	_ = ctx
 	normalizedLanguage := normalizeLanguage(language)
 	switch normalizedLanguage {
-	case "go":
-		return structural.ExtractGoSymbols(path, content)
-	case "typescript", "javascript", "python", "rust", "java":
+	case "go", "typescript", "javascript", "python", "rust", "java":
 		extractorPath := genericExtractorPath(path, normalizedLanguage)
-		symbols, err := structural.ExtractSymbolsGeneric(extractorPath, content)
+		symbols, err := structural.ExtractSymbols(extractorPath, content)
 		if err != nil {
 			return nil, err
 		}
@@ -915,7 +918,6 @@ func extractStructuralSymbols(path string, language string, content []byte) ([]s
 		return nil, nil
 	}
 }
-
 func genericExtractorPath(path string, language string) string {
 	extension := strings.ToLower(filepath.Ext(path))
 	switch language {
