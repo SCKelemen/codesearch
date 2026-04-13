@@ -141,6 +141,9 @@ type indexOptions struct {
 	uri             string
 	embeddings      bool
 	symbolExtractor SymbolExtractor
+	metadata        map[string]string
+	branch          string
+	repositoryID    string
 }
 
 // WithLanguage overrides language detection during indexing.
@@ -168,6 +171,30 @@ func WithEmbeddings(enabled bool) IndexOption {
 func WithSymbolExtractor(extractor SymbolExtractor) IndexOption {
 	return func(opts *indexOptions) {
 		opts.symbolExtractor = extractor
+	}
+}
+
+// WithMetadata adds key-value metadata to the indexed document.
+func WithMetadata(key, value string) IndexOption {
+	return func(opts *indexOptions) {
+		if opts.metadata == nil {
+			opts.metadata = make(map[string]string)
+		}
+		opts.metadata[key] = value
+	}
+}
+
+// WithBranch sets the branch name for the indexed document.
+func WithBranch(branch string) IndexOption {
+	return func(opts *indexOptions) {
+		opts.branch = branch
+	}
+}
+
+// WithRepositoryID sets the repository identifier for the indexed document.
+func WithRepositoryID(id string) IndexOption {
+	return func(opts *indexOptions) {
+		opts.repositoryID = id
 	}
 }
 

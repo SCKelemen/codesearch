@@ -237,6 +237,21 @@ func (e *Engine) indexDocument(ctx context.Context, path string, content []byte,
 		CreatedAt: createdAt,
 		UpdatedAt: now,
 	}
+	// Merge index-time metadata.
+	if len(opts.metadata) > 0 {
+		if doc.Metadata == nil {
+			doc.Metadata = make(map[string]string, len(opts.metadata))
+		}
+		for k, v := range opts.metadata {
+			doc.Metadata[k] = v
+		}
+	}
+	if opts.branch != "" {
+		doc.Branch = opts.branch
+	}
+	if opts.repositoryID != "" {
+		doc.RepositoryID = opts.repositoryID
+	}
 	if err := e.Documents.Put(ctx, doc); err != nil {
 		return fmt.Errorf("store document %q: %w", documentID, err)
 	}

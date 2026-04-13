@@ -91,7 +91,7 @@ func TestSearch_LanguageFilter(t *testing.T) {
 	response := performSearchRequest(t, client, &codesearchpb.SearchRequest{
 		Query:  "needle",
 		Limit:  10,
-		Filter: `language == "Go"`,
+		Filter: `language == "go"`,
 	})
 
 	if len(response.GetResults()) != 1 {
@@ -181,11 +181,11 @@ func TestIndexStatus_AfterIndex(t *testing.T) {
 	if response.Msg.GetEmbeddingCount() != int32(len(files)) {
 		t.Fatalf("response.EmbeddingCount = %d, want %d", response.Msg.GetEmbeddingCount(), len(files))
 	}
-	if response.Msg.GetLanguages()["Go"] != 1 {
-		t.Fatalf("response.Languages[Go] = %d, want 1", response.Msg.GetLanguages()["Go"])
+	if response.Msg.GetLanguages()["go"] != 1 {
+		t.Fatalf("response.Languages[Go] = %d, want 1", response.Msg.GetLanguages()["go"])
 	}
-	if response.Msg.GetLanguages()["Python"] != 1 {
-		t.Fatalf("response.Languages[Python] = %d, want 1", response.Msg.GetLanguages()["Python"])
+	if response.Msg.GetLanguages()["python"] != 1 {
+		t.Fatalf("response.Languages[Python] = %d, want 1", response.Msg.GetLanguages()["python"])
 	}
 }
 
@@ -255,7 +255,7 @@ func TestNewCodeSearchHandler(t *testing.T) {
 func TestHelperConversions(t *testing.T) {
 	t.Parallel()
 
-	request := SearchRequest{Query: "needle", Limit: 5, Mode: "lexical", Filter: `language == "Go"`}
+	request := SearchRequest{Query: "needle", Limit: 5, Mode: "lexical", Filter: `language == "go"`}
 	if got := SearchRequestFromProto(request.ToProto()); got != request {
 		t.Fatalf("SearchRequest round trip = %#v, want %#v", got, request)
 	}
@@ -275,8 +275,8 @@ func TestHelperConversions(t *testing.T) {
 		t.Fatalf("SearchSymbolsResponse round trip = %#v, want %#v", got, symbolResponse)
 	}
 
-	statusResponse := IndexStatusResponse{FileCount: 2, TotalBytes: 100, IndexBytes: 100, EmbeddingCount: 2, Languages: map[string]int32{"Go": 1}}
-	if got := IndexStatusResponseFromProto(statusResponse.ToProto()); got.FileCount != statusResponse.FileCount || got.Languages["Go"] != 1 {
+	statusResponse := IndexStatusResponse{FileCount: 2, TotalBytes: 100, IndexBytes: 100, EmbeddingCount: 2, Languages: map[string]int32{"go": 1}}
+	if got := IndexStatusResponseFromProto(statusResponse.ToProto()); got.FileCount != statusResponse.FileCount || got.Languages["go"] != 1 {
 		t.Fatalf("IndexStatusResponse round trip = %#v, want %#v", got, statusResponse)
 	}
 	if got := IndexStatusRequestFromProto((&IndexStatusRequest{}).ToProto()); got != (IndexStatusRequest{}) {

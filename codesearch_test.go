@@ -182,7 +182,7 @@ func TestEngine_Index_WithIndexOptions(t *testing.T) {
 	if err := engine.Index(
 		ctx,
 		filePath,
-		WithLanguage("Custom"),
+		WithLanguage("custom"),
 		WithEmbeddings(false),
 		WithSymbolExtractor(func(_ context.Context, path, language string, content []byte) ([]structural.Symbol, error) {
 			extractorCalled = true
@@ -208,8 +208,8 @@ func TestEngine_Index_WithIndexOptions(t *testing.T) {
 	if storedDocument == nil {
 		t.Fatal("stored document = nil")
 	}
-	if storedDocument.Language != "Custom" {
-		t.Fatalf("storedDocument.Language = %q, want %q", storedDocument.Language, "Custom")
+	if storedDocument.Language != "custom" {
+		t.Fatalf("storedDocument.Language = %q, want %q", storedDocument.Language, "custom")
 	}
 	vectors, _, err := engine.Vectors.List(ctx)
 	if err != nil {
@@ -307,7 +307,7 @@ func TestEngine_Search_WithFilter(t *testing.T) {
 		t.Fatalf("IndexFile(module.py) error = %v", err)
 	}
 
-	results, err := engine.Search(ctx, "needle", WithFilter(`language == "Go"`))
+	results, err := engine.Search(ctx, "needle", WithFilter(`language == "go"`))
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -357,11 +357,11 @@ func TestEngine_Status(t *testing.T) {
 	if status.totalBytes <= 0 {
 		t.Fatalf("status.totalBytes = %d, want > 0", status.totalBytes)
 	}
-	if status.languages["Go"] != 1 {
-		t.Fatalf("status.languages[Go] = %d, want 1", status.languages["Go"])
+	if status.languages["go"] != 1 {
+		t.Fatalf("status.languages[Go] = %d, want 1", status.languages["go"])
 	}
-	if status.languages["Python"] != 1 {
-		t.Fatalf("status.languages[Python] = %d, want 1", status.languages["Python"])
+	if status.languages["python"] != 1 {
+		t.Fatalf("status.languages[Python] = %d, want 1", status.languages["python"])
 	}
 }
 

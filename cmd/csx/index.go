@@ -13,6 +13,7 @@ import (
 
 	"github.com/SCKelemen/clix"
 	"github.com/SCKelemen/codesearch"
+	"github.com/SCKelemen/codesearch/gitinfo"
 	"github.com/SCKelemen/codesearch/structural"
 )
 
@@ -44,9 +45,15 @@ func newIndexCommand() *clix.Command {
 		Value:       &embeddings,
 	})
 
+	var useGit bool
+	cmd.Flags.BoolVar(clix.BoolVarOptions{
+		FlagOptions: clix.FlagOptions{Name: "git", Short: "g", Usage: "Enrich documents with git metadata (branch, author, commit info)"},
+		Value:       &useGit,
+	})
+
 	cmd.Run = func(ctx *clix.Context) error {
 		ui := newCLIUI(ctx.App.Out)
-		return runIndex(ctx, ui, ctx.Args[0], outputDir, parseLanguageFilter(languageFilter), embeddings, useLSP)
+		return runIndex(ctx, ui, ctx.Args[0], outputDir, parseLanguageFilter(languageFilter), embeddings, useLSP, useGit)
 	}
 	cmd.PostRun = func(ctx *clix.Context) error {
 		_, _ = fmt.Fprintln(ctx.App.Out)
@@ -55,7 +62,7 @@ func newIndexCommand() *clix.Command {
 	return cmd
 }
 
-func runIndex(ctx *clix.Context, ui *cliUI, rootPath, outputDir string, filters map[string]struct{}, embeddings bool, useLSP bool) error {
+func runIndex(ctx *clix.Context, ui *cliUI, rootPath, outputDir string, filters map[string]struct{}, embeddings bool, useLSP bool, useGit bool) error {
 	resolvedRoot, err := filepath.Abs(rootPath)
 	if err != nil {
 		return fmt.Errorf("resolve input path: %w", err)
@@ -105,6 +112,30 @@ func runIndex(ctx *clix.Context, ui *cliUI, rootPath, outputDir string, filters 
 	ui.info("lsp %t", mux != nil)
 	ui.info("files %d", len(inputs))
 
+	var repoInfo *gitinfo.RepoInfo
+	var fileInfoMap map[string]*gitinfo.FileInfo
+	if useGit {
+		if _, err := os.Stat(filepath.Join(workDir, ".git")); err == nil {
+			ui.info("git metadata enabled")
+			repoInfo, err = gitinfo.Repo(ctx, workDir)
+			if err != nil {
+				ui.warnf("git repo info: %v", err)
+			} else {
+				ui.info("repository %s", repoInfo.Repository)
+				ui.info("branch %s", repoInfo.Branch)
+				ui.info("head %s", repoInfo.HeadCommit[:min(8, len(repoInfo.HeadCommit))])
+			}
+			fileInfoMap, err = gitinfo.BatchFileInfo(ctx, workDir, inputs)
+			if err != nil {
+				ui.warnf("git file info: %v", err)
+			} else {
+				ui.info("git file metadata for %d files", len(fileInfoMap))
+			}
+		} else {
+			ui.warnf("--git enabled but no .git directory found")
+		}
+	}
+
 	var lsifStatsText string
 	if mux != nil {
 		lsifPath := filepath.Join(resolvedOutput, defaultLSIFFile)
@@ -129,7 +160,31 @@ func runIndex(ctx *clix.Context, ui *cliUI, rootPath, outputDir string, filters 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := engine.Index(ctx, input, indexOpts...); err != nil {
+		fileOpts := append([]codesearch.IndexOption(nil), indexOpts...)
+		if repoInfo != nil {
+			fileOpts = append(fileOpts,
+				codesearch.WithBranch(repoInfo.Branch),
+				codesearch.WithRepositoryID(repoInfo.Repository),
+			)
+		}
+		if fi, ok := fileInfoMap[input]; ok {
+			fileOpts = append(fileOpts,
+				codesearch.WithMetadata("commit_sha", fi.LastCommitSHA),
+				codesearch.WithMetadata("author_name", fi.LastAuthorName),
+				codesearch.WithMetadata("author_email", fi.LastAuthorEmail),
+				codesearch.WithMetadata("commit_message", fi.LastCommitMessage),
+			)
+			if !fi.LastCommitDate.IsZero() {
+				fileOpts = append(fileOpts, codesearch.WithMetadata("last_modified", fi.LastCommitDate.Format(time.RFC3339)))
+			}
+			if !fi.FirstCommitDate.IsZero() {
+				fileOpts = append(fileOpts, codesearch.WithMetadata("first_committed", fi.FirstCommitDate.Format(time.RFC3339)))
+			}
+			if fi.CommitCount > 0 {
+				fileOpts = append(fileOpts, codesearch.WithMetadata("commit_count", fmt.Sprintf("%d", fi.CommitCount)))
+			}
+		}
+		if err := engine.Index(ctx, input, fileOpts...); err != nil {
 			return fmt.Errorf("index %s: %w", input, err)
 		}
 		if info, err := os.Stat(input); err == nil {
