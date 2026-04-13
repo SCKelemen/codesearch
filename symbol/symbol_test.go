@@ -6,14 +6,20 @@ func TestIndexAddAndLookup(t *testing.T) {
 	t.Parallel()
 	idx := NewIndex()
 	idx.Add(Symbol{
-		Name: "Foo", Kind: KindFunction, Language: "go",
-		Location:   Location{URI: "file:///main.go", StartLine: 10},
-		IsExported: true, IsDefinition: true,
+		Name:         "Foo",
+		Kind:         KindFunction,
+		Language:     "go",
+		Location:     Location{URI: "file:///main.go", StartLine: 10},
+		IsExported:   true,
+		IsDefinition: true,
 	})
 	idx.Add(Symbol{
-		Name: "Foo", Kind: KindVariable, Language: "go",
-		Location:   Location{URI: "file:///other.go", StartLine: 5},
-		IsExported: false, IsDefinition: false,
+		Name:         "Foo",
+		Kind:         KindVariable,
+		Language:     "go",
+		Location:     Location{URI: "file:///other.go", StartLine: 5},
+		IsExported:   false,
+		IsDefinition: false,
 	})
 
 	if idx.Count() != 2 {
@@ -63,5 +69,23 @@ func TestIndexEmpty(t *testing.T) {
 	}
 	if idx.LookupName("x") != nil {
 		t.Error("empty lookup should return nil")
+	}
+}
+
+func TestIndexAll(t *testing.T) {
+	t.Parallel()
+	idx := NewIndex()
+	idx.Add(Symbol{Name: "Foo", Kind: KindFunction, Location: Location{URI: "a.go", StartLine: 1, EndLine: 5}})
+	idx.Add(Symbol{Name: "Bar", Kind: KindClass, Location: Location{URI: "b.go", StartLine: 10, EndLine: 20}})
+
+	all := idx.All()
+	if len(all) != 2 {
+		t.Errorf("expected 2 symbols, got %d", len(all))
+	}
+
+	all[0].Name = "Modified"
+	original := idx.All()
+	if original[0].Name == "Modified" {
+		t.Error("All() should return a copy, not a reference")
 	}
 }

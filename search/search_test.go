@@ -2,11 +2,31 @@ package search
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/SCKelemen/codesearch/exact"
+	"github.com/SCKelemen/codesearch/ranking"
 	"github.com/SCKelemen/codesearch/symbol"
+	"github.com/SCKelemen/codesearch/trigram"
 )
+
+type stubTrigramIndex struct {
+	postings []trigram.Posting
+}
+
+func (s *stubTrigramIndex) Add(context.Context, trigram.Trigram, trigram.Posting) error {
+	return nil
+}
+
+func (s *stubTrigramIndex) Query(context.Context, []trigram.Trigram) ([]trigram.Posting, error) {
+	return s.postings, nil
+}
+
+func (s *stubTrigramIndex) Remove(context.Context, string) error {
+	return nil
+}
 
 func TestEngineExactSearch(t *testing.T) {
 	t.Parallel()
@@ -32,9 +52,11 @@ func TestEngineSymbolSearch(t *testing.T) {
 	t.Parallel()
 	symIdx := symbol.NewIndex()
 	symIdx.Add(symbol.Symbol{
-		Name: "HandleRequest", Kind: symbol.KindFunction,
+		Name:         "HandleRequest",
+		Kind:         symbol.KindFunction,
 		Location:     symbol.Location{URI: "handler.go", StartLine: 10},
-		IsDefinition: true, IsExported: true,
+		IsDefinition: true,
+		IsExported:   true,
 	})
 
 	engine := NewEngine(WithSymbolIndex(symIdx))
@@ -71,7 +93,6 @@ func TestEngineFuzzySearch(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("expected fuzzy results")
 	}
-	// HandleRequest should be the top result
 	if results[0].SymbolName != "HandleRequest" {
 		t.Errorf("expected HandleRequest first, got %s", results[0].SymbolName)
 	}
@@ -109,5 +130,52 @@ func TestEngineMaxResults(t *testing.T) {
 	}
 	if len(results) > 2 {
 		t.Errorf("expected <= 2 results, got %d", len(results))
+	}
+}
+
+func TestWithTrigramIndex(t *testing.T) {
+	t.Parallel()
+	idx := &stubTrigramIndex{}
+	engine := NewEngine(WithTrigramIndex(idx))
+	if engine.trigramIndex != idx {
+		t.Fatal("expected trigram index to be set")
+	}
+}
+
+func TestWithRanker(t *testing.T) {
+	t.Parallel()
+	r := ranking.NewRanker(ranking.DefaultConfig(), 100, 50.0, map[string]int{"foo": 5})
+	engine := NewEngine(WithRanker(r))
+	if engine.ranker != r {
+		t.Fatal("expected ranker to be set")
+	}
+}
+
+func TestSearchRegexMode(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "main.go")
+	if err := os.WriteFile(path, []byte("test helper func\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	idx := &stubTrigramIndex{postings: []trigram.Posting{{FilePath: path}}}
+	engine := NewEngine(WithTrigramIndex(idx))
+	results, err := engine.Search(context.Background(), Request{
+		Query:      "test.*func",
+		Mode:       ModeRegex,
+		MaxResults: 10,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Mode != ModeRegex {
+		t.Fatalf("expected ModeRegex, got %d", results[0].Mode)
+	}
+	if results[0].Path != path {
+		t.Fatalf("expected path %q, got %q", path, results[0].Path)
 	}
 }

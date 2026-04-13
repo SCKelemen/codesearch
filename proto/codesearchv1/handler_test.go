@@ -380,3 +380,38 @@ func assertConnectErrorContains(t *testing.T, err error, wantCode connect.Code, 
 		t.Fatalf("error message = %q, want to contain %q", connectErr.Message(), want)
 	}
 }
+
+func TestSearchSymbolsWithKindFilter(t *testing.T) {
+	t.Parallel()
+
+	engine := codesearch.New(codesearch.WithMemoryStore())
+	indexTestFiles(t, engine, map[string]string{
+		"src/main.go": "package main\n\nfunc test() {}\nfunc helper() {}\n",
+	})
+
+	client, _ := newTestClient(t, engine)
+	response, err := client.SearchSymbols(context.Background(), connect.NewRequest(&codesearchpb.SearchSymbolsRequest{
+		Name:  "test",
+		Kind:  "function",
+		Limit: 10,
+	}))
+	if err != nil {
+		t.Fatalf("SearchSymbols() error = %v", err)
+	}
+	if len(response.Msg.GetResults()) != 1 {
+		t.Fatalf("len(response.Results) = %d, want 1", len(response.Msg.GetResults()))
+	}
+}
+
+func TestSearchSymbolsInvalidKind(t *testing.T) {
+	t.Parallel()
+
+	engine := codesearch.New(codesearch.WithMemoryStore())
+	client, _ := newTestClient(t, engine)
+
+	_, err := client.SearchSymbols(context.Background(), connect.NewRequest(&codesearchpb.SearchSymbolsRequest{
+		Name: "test",
+		Kind: "invalid_kind_xyz",
+	}))
+	assertConnectErrorContains(t, err, connect.CodeInvalidArgument, "unknown symbol kind")
+}

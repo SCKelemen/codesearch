@@ -11,7 +11,10 @@
 //	Hook (onChange)     Hook (onIndex)
 package index
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // FileEntry represents a file to be indexed.
 type FileEntry struct {
@@ -190,7 +193,7 @@ func (p *Pipeline) Run(ctx context.Context) (Stats, error) {
 func (p *Pipeline) Watch(ctx context.Context) error {
 	changes, err := p.source.Watch(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("watch source: %w", err)
 	}
 
 	for {
@@ -232,7 +235,7 @@ func (p *Pipeline) processChange(ctx context.Context, change Change) error {
 	case ChangeAdded, ChangeModified:
 		data, err := p.processFile(ctx, change.Entry)
 		if err != nil {
-			return err
+			return fmt.Errorf("process file %q: %w", change.Entry.URI, err)
 		}
 		return p.sink.Store(ctx, change.Entry, data)
 	}

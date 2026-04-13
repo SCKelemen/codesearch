@@ -1,1 +1,27 @@
+# Binaries
 csx
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+cover.out
+coverage.html
+*.prof
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build cache
+vendor/

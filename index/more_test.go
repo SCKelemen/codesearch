@@ -264,6 +264,7 @@ func TestPipelineWatchChangeHandlingAndCancellation(t *testing.T) {
 	t.Run("processes add modify and delete while reporting errors", func(t *testing.T) {
 		t.Parallel()
 
+		watchTransformErr := errors.New("watch transform failed")
 		changes := make(chan Change, 4)
 		changes <- Change{Type: ChangeAdded, Entry: FileEntry{URI: "file:///added.go", Path: "added.go", Content: []byte("add")}}
 		changes <- Change{Type: ChangeModified, Entry: FileEntry{URI: "file:///broken.go", Path: "broken.go", Content: []byte("bad")}}
@@ -278,7 +279,7 @@ func TestPipelineWatchChangeHandlingAndCancellation(t *testing.T) {
 			watchFn: func(context.Context) (<-chan Change, error) { return changes, nil },
 		}, sink, WithTransformer(pipelineTransformer{fn: func(_ context.Context, entry FileEntry) (map[string]any, error) {
 			if entry.URI == "file:///broken.go" {
-				return nil, errors.New("watch transform failed")
+				return nil, watchTransformErr
 			}
 			return map[string]any{"path": entry.Path}, nil
 		}}), WithHook(hook))
@@ -304,8 +305,8 @@ func TestPipelineWatchChangeHandlingAndCancellation(t *testing.T) {
 		if len(hook.fileEntries) != 1 || hook.fileEntries[0] != "file:///broken.go" {
 			t.Fatalf("hook file entries = %v, want only broken.go error", hook.fileEntries)
 		}
-		if hook.fileErrors[0] == nil || hook.fileErrors[0].Error() != "watch transform failed" {
-			t.Fatalf("hook error = %v, want watch transform failed", hook.fileErrors[0])
+		if !errors.Is(hook.fileErrors[0], watchTransformErr) {
+			t.Fatalf("hook error = %v, want wrapped %v", hook.fileErrors[0], watchTransformErr)
 		}
 	})
 

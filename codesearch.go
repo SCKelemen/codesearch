@@ -151,18 +151,18 @@ func newEngine(defaultDir string, opts ...Option) (*Engine, error) {
 // Index indexes a file or every file under a directory.
 func (e *Engine) Index(ctx context.Context, path string, opts ...IndexOption) error {
 	if err := e.ready(); err != nil {
-		return err
+		return fmt.Errorf("engine not ready: %w", err)
 	}
 
 	indexOpts := resolveIndexOptions(opts...)
 	info, err := os.Stat(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("stat path %q: %w", path, err)
 	}
 	if !info.IsDir() {
 		content, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			return fmt.Errorf("read file %q: %w", path, err)
 		}
 		return e.indexDocument(ctx, path, content, indexOpts)
 	}
@@ -175,11 +175,11 @@ func (e *Engine) Index(ctx context.Context, path string, opts ...IndexOption) er
 			return nil
 		}
 		if err := ctx.Err(); err != nil {
-			return err
+			return fmt.Errorf("index path %q: %w", current, err)
 		}
 		content, err := os.ReadFile(current)
 		if err != nil {
-			return err
+			return fmt.Errorf("read file %q: %w", current, err)
 		}
 		return e.indexDocument(ctx, current, content, indexOpts)
 	})
@@ -188,34 +188,34 @@ func (e *Engine) Index(ctx context.Context, path string, opts ...IndexOption) er
 // IndexFile indexes a single file.
 func (e *Engine) IndexFile(ctx context.Context, path string, content []byte) error {
 	if err := e.ready(); err != nil {
-		return err
+		return fmt.Errorf("engine not ready: %w", err)
 	}
 	return e.indexDocument(ctx, path, content, resolveIndexOptions())
 }
 
 func (e *Engine) indexDocument(ctx context.Context, path string, content []byte, opts indexOptions) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("index document %q: %w", path, err)
 	}
 
 	now := time.Now().UTC()
 	documentID := cleanPath(path)
 	existing, err := e.Documents.Lookup(ctx, documentID)
 	if err != nil {
-		return err
+		return fmt.Errorf("lookup document %q: %w", documentID, err)
 	}
 	createdAt := now
 	if existing != nil && !existing.CreatedAt.IsZero() {
 		createdAt = existing.CreatedAt
 	}
 	if err := e.removeDocumentPostings(ctx, documentID); err != nil {
-		return err
+		return fmt.Errorf("remove postings for document %q: %w", documentID, err)
 	}
 	if err := e.Vectors.Delete(ctx, documentID); err != nil {
-		return err
+		return fmt.Errorf("delete vectors for document %q: %w", documentID, err)
 	}
 	if err := e.removeDocumentSymbols(ctx, documentID); err != nil {
-		return err
+		return fmt.Errorf("remove symbols for document %q: %w", documentID, err)
 	}
 
 	language := opts.language
@@ -234,28 +234,28 @@ func (e *Engine) indexDocument(ctx context.Context, path string, content []byte,
 		UpdatedAt: now,
 	}
 	if err := e.Documents.Put(ctx, doc); err != nil {
-		return err
+		return fmt.Errorf("store document %q: %w", documentID, err)
 	}
 
 	for _, tri := range trigram.Extract(content) {
 		postingTrigram := store.NewTrigram(tri[0], tri[1], tri[2])
 		list, err := e.Trigrams.Lookup(ctx, postingTrigram)
 		if err != nil {
-			return err
+			return fmt.Errorf("lookup trigram postings for document %q: %w", documentID, err)
 		}
 		postingList := store.PostingList{Trigram: postingTrigram, DocumentIDs: []string{documentID}}
 		if list != nil {
 			postingList.DocumentIDs = append(append([]string(nil), list.DocumentIDs...), documentID)
 		}
 		if err := e.Trigrams.Put(ctx, postingList); err != nil {
-			return err
+			return fmt.Errorf("store trigram postings for document %q: %w", documentID, err)
 		}
 	}
 
 	if e.Embedder != nil && opts.embeddings {
 		vectors, err := e.Embedder.Embed(ctx, []string{string(content)})
 		if err != nil {
-			return err
+			return fmt.Errorf("embed document %q: %w", documentID, err)
 		}
 		if len(vectors) > 0 {
 			if err := e.Vectors.Put(ctx, store.StoredVector{
@@ -267,13 +267,13 @@ func (e *Engine) indexDocument(ctx context.Context, path string, content []byte,
 				CreatedAt:  createdAt,
 				UpdatedAt:  now,
 			}); err != nil {
-				return err
+				return fmt.Errorf("store vectors for document %q: %w", documentID, err)
 			}
 		}
 	}
 
 	if err := e.indexSymbols(ctx, doc, opts); err != nil {
-		return err
+		return fmt.Errorf("index symbols for document %q: %w", documentID, err)
 	}
 
 	return e.flush()
@@ -852,12 +852,12 @@ func (e *Engine) removeDocumentSymbols(ctx context.Context, documentID string) e
 	cursor := ""
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return fmt.Errorf("remove symbols for document %q: %w", documentID, err)
 		}
 
 		symbols, nextCursor, err := e.Symbols.List(ctx, store.WithDocumentID(documentID), store.WithLimit(512), store.WithCursor(cursor))
 		if err != nil {
-			return err
+			return fmt.Errorf("list symbols for document %q: %w", documentID, err)
 		}
 		for _, symbol := range symbols {
 			symbolIDs = append(symbolIDs, symbol.ID)
@@ -870,7 +870,7 @@ func (e *Engine) removeDocumentSymbols(ctx context.Context, documentID string) e
 
 	for _, symbolID := range symbolIDs {
 		if err := e.Symbols.Delete(ctx, symbolID); err != nil {
-			return err
+			return fmt.Errorf("delete symbol %q for document %q: %w", symbolID, documentID, err)
 		}
 	}
 
@@ -884,15 +884,15 @@ func (e *Engine) indexSymbols(ctx context.Context, doc store.Document, opts inde
 	}
 	symbols, err := extractor(ctx, doc.Path, doc.Language, doc.Content)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract symbols for document %q: %w", doc.Path, err)
 	}
 
 	for _, symbol := range symbols {
 		if err := ctx.Err(); err != nil {
-			return err
+			return fmt.Errorf("index symbols for document %q: %w", doc.Path, err)
 		}
 		if err := e.Symbols.Put(ctx, storeSymbolFromStructural(doc, symbol)); err != nil {
-			return err
+			return fmt.Errorf("store symbol %q for document %q: %w", symbol.Name, doc.Path, err)
 		}
 	}
 
@@ -1039,7 +1039,7 @@ func storeSymbolKind(kind structural.SymbolKind) store.SymbolKind {
 func (e *Engine) removeDocumentPostings(ctx context.Context, documentID string) error {
 	postingLists, _, err := e.Trigrams.List(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("list trigram postings for document %q: %w", documentID, err)
 	}
 	for _, postingList := range postingLists {
 		filtered := make([]string, 0, len(postingList.DocumentIDs))
@@ -1056,13 +1056,13 @@ func (e *Engine) removeDocumentPostings(ctx context.Context, documentID string) 
 		}
 		if len(filtered) == 0 {
 			if err := e.Trigrams.Delete(ctx, postingList.Trigram); err != nil {
-				return err
+				return fmt.Errorf("delete trigram postings for document %q: %w", documentID, err)
 			}
 			continue
 		}
 		postingList.DocumentIDs = filtered
 		if err := e.Trigrams.Put(ctx, postingList); err != nil {
-			return err
+			return fmt.Errorf("update trigram postings for document %q: %w", documentID, err)
 		}
 	}
 	return nil

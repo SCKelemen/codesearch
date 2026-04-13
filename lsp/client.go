@@ -189,7 +189,7 @@ func (c *Client) Close() error {
 
 func (c *Client) OpenFile(ctx context.Context, uri string, content string) error {
 	if err := ctxErr(ctx); err != nil {
-		return err
+		return fmt.Errorf("open file %q: %w", uri, err)
 	}
 
 	params := map[string]any{
@@ -354,7 +354,7 @@ func (c *Client) sendNotification(method string, params any) error {
 
 	paramsRaw, err := marshalParams(params)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal notification params for %q: %w", method, err)
 	}
 
 	return c.writeMessage(jsonrpcRequest{
@@ -425,7 +425,7 @@ func (c *Client) initialize(ctx context.Context) error {
 	}
 
 	if _, err := c.sendRequestContext(ctx, "initialize", params); err != nil {
-		return err
+		return fmt.Errorf("initialize language server: %w", err)
 	}
 	return c.sendNotification("initialized", map[string]any{})
 }
@@ -512,7 +512,7 @@ func (c *Client) request(ctx context.Context, method string, params any) (json.R
 func (c *Client) writeMessage(v any) error {
 	payload, err := json.Marshal(v)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal JSON-RPC message: %w", err)
 	}
 	return c.writePayload(payload)
 }
@@ -522,10 +522,13 @@ func (c *Client) writePayload(payload []byte) error {
 	defer c.writeMu.Unlock()
 
 	if _, err := fmt.Fprintf(c.stdin, "Content-Length: %d\r\n\r\n", len(payload)); err != nil {
-		return err
+		return fmt.Errorf("write JSON-RPC header: %w", err)
 	}
 	_, err := c.stdin.Write(payload)
-	return err
+	if err != nil {
+		return fmt.Errorf("write JSON-RPC payload: %w", err)
+	}
+	return nil
 }
 
 func (c *Client) readMessage() ([]byte, error) {
