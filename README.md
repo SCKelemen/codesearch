@@ -262,6 +262,92 @@ The server exposes:
 - `GET /api/search` for JSON search responses
 - ConnectRPC procedures for search, index status, and symbol search
 
+
+### `csx github`
+
+Index your GitHub repositories for local code search. Downloads repos via the
+GitHub Archive API (tarball) for maximum speed, with automatic fallback to
+parallel per-file fetching.
+
+#### Authentication
+
+`csx github` needs a GitHub token. Three ways to provide one:
+
+**Option 1: Use the `gh` CLI (recommended)**
+
+If you have the [GitHub CLI](https://cli.github.com/) installed and authenticated:
+
+```bash
+# Authenticate once (if you haven't already)
+gh auth login
+
+# csx will use your gh token automatically
+csx github
+```
+
+Under the hood, `csx` checks `GITHUB_TOKEN`, then `GH_TOKEN`. You can
+export the token from `gh`:
+
+```bash
+export GITHUB_TOKEN=$(gh auth token)
+csx github
+```
+
+**Option 2: Pass a token directly**
+
+```bash
+csx github --token ghp_yourPersonalAccessToken
+```
+
+**Option 3: Set an environment variable**
+
+```bash
+export GITHUB_TOKEN=ghp_yourPersonalAccessToken
+# or
+export GH_TOKEN=ghp_yourPersonalAccessToken
+
+csx github
+```
+
+> **Required scopes**: `repo` (for private repos) or no scopes needed for public repos only.
+> Check your token scopes with `gh auth status`.
+
+#### Examples
+
+```bash
+# Index all your repos (authenticated user)
+csx github
+
+# Index a specific user's public repos (Go and TypeScript only)
+csx github --user SCKelemen --language go,ts
+
+# Index an organization's repos
+csx github --org lovablelabs --max-repos 20
+
+# Index with a custom output directory
+csx github --output ~/.csx/my-repos
+
+# Include archived and forked repos
+csx github --archived --forks
+
+# Search across all indexed repos
+csx search --index .csx/github "func handleRequest"
+
+# One-liner: index and search using gh CLI token
+GITHUB_TOKEN=$(gh auth token) csx github --user SCKelemen --max-repos 5 && csx search --index .csx/github "TODO"
+```
+
+#### How it works
+
+1. **Discover** — Lists repos via the GitHub API (sorted by most recently updated)
+2. **Download** — Fetches each repo as a gzipped tarball (1 HTTP request per repo)
+3. **Filter** — Skips lockfiles, vendor dirs, minified assets, and files >1 MiB
+4. **Index** — Builds trigram, symbol, and vector indexes into a shared local store
+5. **URI** — Each file gets a `github://owner/repo/path@branch` URI for search results
+
+If the tarball API is unavailable, falls back to parallel per-file fetching via
+the Contents API (`--concurrency` controls the worker count, default 8).
+
 ### `csx lsif`
 
 Generate LSIF JSON Lines output from LSP-backed analysis.
