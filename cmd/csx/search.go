@@ -34,6 +34,7 @@ func newSearchCommand() *clix.Command {
 	var mode string
 	var limit int
 	var jsonOutput bool
+	var filter string
 
 	cmd.Flags.StringVar(clix.StringVarOptions{
 		FlagOptions: clix.FlagOptions{Name: "index", Short: "i", Usage: "Path to the local index directory"},
@@ -55,6 +56,10 @@ func newSearchCommand() *clix.Command {
 		Value:       &jsonOutput,
 	})
 	cmd.Flags.StringVar(clix.StringVarOptions{
+		FlagOptions: clix.FlagOptions{Name: "filter", Short: "f", Usage: `CEL filter expression (e.g. 'language == "go"' or 'file_size < 10000')`},
+		Value:       &filter,
+	})
+	cmd.Flags.StringVar(clix.StringVarOptions{
 		FlagOptions: clix.FlagOptions{Name: "remote", Short: "r", Usage: "Remote server address, for example 127.0.0.1:8080"},
 		Value:       &remote,
 	})
@@ -74,7 +79,7 @@ func newSearchCommand() *clix.Command {
 			return runInteractive(ctx.App.Out, indexDir, limit, searchMode)
 		}
 
-		response, err := runSearch(ctx, indexDir, remote, searchRequest{Query: ctx.Args[0], Limit: limit, Mode: mode})
+		response, err := runSearch(ctx, indexDir, remote, searchRequest{Query: ctx.Args[0], Limit: limit, Mode: mode, Filter: filter})
 		if err != nil {
 			return err
 		}
@@ -96,7 +101,7 @@ func runSearch(ctx *clix.Context, indexDir, remote string, request searchRequest
 		limit = defaultSearchLimit
 	}
 	if strings.TrimSpace(remote) != "" {
-		remoteRequest := searchRequest{Query: request.Query, Limit: limit, Mode: modeLabel(mode)}
+		remoteRequest := searchRequest{Query: request.Query, Limit: limit, Mode: modeLabel(mode), Filter: request.Filter}
 		response, err := httpConnectSearch(ctx, http.DefaultClient, remote, remoteRequest)
 		if err == nil {
 			return response, nil
@@ -114,11 +119,15 @@ func runSearch(ctx *clix.Context, indexDir, remote string, request searchRequest
 	defer func() {
 		_ = engine.Close()
 	}()
-	results, err := engine.Search(ctx, request.Query, codesearch.WithLimit(limit), codesearch.WithMode(mode))
+	searchOpts := []codesearch.SearchOption{codesearch.WithLimit(limit), codesearch.WithMode(mode)}
+	if request.Filter != "" {
+		searchOpts = append(searchOpts, codesearch.WithFilter(request.Filter))
+	}
+	results, err := engine.Search(ctx, request.Query, searchOpts...)
 	if err != nil {
 		return searchResponse{}, err
 	}
-	return buildSearchResponse(request.Query, limit, mode, "local", results), nil
+	return buildSearchResponse(request.Query, limit, mode, "local", request.Filter, results), nil
 }
 
 func renderSearchJSON(out io.Writer, response searchResponse) error {
@@ -131,6 +140,9 @@ func renderSearchText(out io.Writer, response searchResponse) error {
 	ui := newCLIUI(out)
 	ui.section("Search results")
 	ui.kv("query", fmt.Sprintf("%q", response.Query))
+	if response.Filter != "" {
+		ui.kv("filter", response.Filter)
+	}
 	ui.kv("mode", response.Mode)
 	if response.Source != "" {
 		ui.kv("source", response.Source)
@@ -164,22 +176,76 @@ func renderSearchText(out io.Writer, response searchResponse) error {
 	return nil
 }
 
-func highlightSnippet(ui *cliUI, snippet string, matches []matchRange) string {
-	text := ui.snippet(snippet, 110)
-	if len(matches) == 0 {
+func highlightSnippet(ui *cliUI, rawSnippet string, matches []matchRange) string {
+	// Clean the snippet the same way ui.snippet does, then re-locate matches
+	// in the cleaned text. The engine computes Match offsets against the raw
+	// line, but ui.snippet applies TrimSpace + tab replacement which shifts
+	// byte positions.
+	cleaned := strings.TrimSpace(strings.ReplaceAll(rawSnippet, "	", "    "))
+	text := ui.text.ElideEnd(cleaned, 110)
+	if len(matches) == 0 || len(text) == 0 {
 		return text
 	}
-	var builder strings.Builder
-	position := 0
-	for _, match := range matches {
-		start := clamp(match.Start, 0, len(text))
-		end := clamp(match.End, 0, len(text))
-		if start < position || start >= end {
+
+	// Build a mapping from raw byte offset to cleaned byte offset.
+	// The raw snippet may have leading whitespace that was trimmed.
+	rawCleaned := strings.TrimSpace(rawSnippet)
+	leadingTrimmed := strings.Index(rawSnippet, rawCleaned)
+	if leadingTrimmed < 0 {
+		leadingTrimmed = 0
+	}
+
+	// Remap each match from raw-snippet space to cleaned-text space.
+	type remapped struct{ start, end int }
+	var adjusted []remapped
+	for _, m := range matches {
+		// Shift for leading whitespace trim
+		rawStart := m.Start - leadingTrimmed
+		rawEnd := m.End - leadingTrimmed
+		if rawEnd <= 0 || rawStart >= len(rawCleaned) {
 			continue
 		}
-		builder.WriteString(text[position:start])
-		builder.WriteString(ui.paint(ui.accent, text[start:end]))
-		position = end
+		if rawStart < 0 {
+			rawStart = 0
+		}
+		if rawEnd > len(rawCleaned) {
+			rawEnd = len(rawCleaned)
+		}
+
+		// Account for tab expansion: count tabs before start and end
+		// in the raw trimmed string, each tab becomes 4 chars (+3 bytes)
+		cleanStart := rawStart
+		cleanEnd := rawEnd
+		for i := 0; i < rawEnd && i < len(rawCleaned); i++ {
+			if rawCleaned[i] == '	' {
+				if i < rawStart {
+					cleanStart += 3
+				}
+				cleanEnd += 3
+			}
+		}
+
+		// Clamp to the elided text length
+		cleanStart = clamp(cleanStart, 0, len(text))
+		cleanEnd = clamp(cleanEnd, 0, len(text))
+		if cleanStart < cleanEnd {
+			adjusted = append(adjusted, remapped{cleanStart, cleanEnd})
+		}
+	}
+
+	if len(adjusted) == 0 {
+		return text
+	}
+
+	var builder strings.Builder
+	position := 0
+	for _, m := range adjusted {
+		if m.start < position {
+			continue
+		}
+		builder.WriteString(text[position:m.start])
+		builder.WriteString(ui.paint(ui.accent, text[m.start:m.end]))
+		position = m.end
 	}
 	builder.WriteString(text[position:])
 	return builder.String()
@@ -206,11 +272,15 @@ func httpConnectSearch(ctx context.Context, client *http.Client, address string,
 	}
 
 	service := codesearchv1connect.NewCodeSearchServiceClient(client, normalizeAddress(address))
-	response, err := service.Search(ctx, connect.NewRequest(&codesearchpb.SearchRequest{
+	searchReq := &codesearchpb.SearchRequest{
 		Query: request.Query,
 		Limit: int32(limit),
 		Mode:  modeLabel(mode),
-	}))
+	}
+	if request.Filter != "" {
+		searchReq.Filter = request.Filter
+	}
+	response, err := service.Search(ctx, connect.NewRequest(searchReq))
 	if err != nil {
 		return searchResponse{}, err
 	}

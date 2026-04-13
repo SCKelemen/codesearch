@@ -451,7 +451,7 @@ func newSearchHandler(t *testing.T, engine *codesearch.Engine) http.Handler {
 			writeAPIError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if err := writeJSON(w, http.StatusOK, buildSearchResponse(query, limit, mode, "remote", results)); err != nil {
+		if err := writeJSON(w, http.StatusOK, buildSearchResponse(query, limit, mode, "remote", "", results)); err != nil {
 			t.Fatalf("write json response: %v", err)
 		}
 	})

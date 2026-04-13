@@ -224,13 +224,13 @@ func (e *Engine) indexDocument(ctx context.Context, path string, content []byte,
 
 	language := opts.language
 	if language == "" {
-		language = detectLanguage(path)
+		language = detectLanguage(documentPath)
 	}
 
 	doc := store.Document{
 		ID:        documentID,
 		Path:      documentPath,
-		Language:  language,
+		Language:  strings.ToLower(language),
 		Content:   append([]byte(nil), content...),
 		Size:      int64(len(content)),
 		Checksum:  checksum(content),
@@ -760,6 +760,19 @@ func (e *Engine) filterResults(ctx context.Context, results []Result, expression
 	return filtered, nil
 }
 
+// stripBranchSuffix removes a trailing @branch from a URI path so that
+// filepath.Ext returns the correct file extension. For example,
+// "github://owner/repo/file.go@main" becomes "github://owner/repo/file.go".
+func stripBranchSuffix(path string) string {
+	if idx := strings.LastIndex(path, "@"); idx > 0 {
+		// Only strip if there's a dot before the @ (i.e. it looks like file.ext@branch)
+		if dotIdx := strings.LastIndex(path[:idx], "."); dotIdx > 0 {
+			return path[:idx]
+		}
+	}
+	return path
+}
+
 func filterContextFromDocument(doc store.Document) celfilter.FilterContext {
 	projectID := ""
 	if doc.Metadata != nil {
@@ -769,7 +782,7 @@ func filterContextFromDocument(doc store.Document) celfilter.FilterContext {
 	return celfilter.FilterContext{
 		Language:      doc.Language,
 		FilePath:      doc.Path,
-		FileExtension: strings.ToLower(filepath.Ext(doc.Path)),
+		FileExtension: strings.ToLower(filepath.Ext(stripBranchSuffix(doc.Path))),
 		FileSize:      doc.Size,
 		Branch:        doc.Branch,
 		Repository:    doc.RepositoryID,
@@ -1073,7 +1086,7 @@ func (e *Engine) removeDocumentPostings(ctx context.Context, documentID string) 
 }
 
 func detectLanguage(path string) string {
-	language := linguist.LookupByExtension(filepath.Ext(path))
+	language := linguist.LookupByExtension(filepath.Ext(stripBranchSuffix(path)))
 	if language == nil {
 		return ""
 	}

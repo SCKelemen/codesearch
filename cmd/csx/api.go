@@ -32,9 +32,10 @@ const (
 )
 
 type searchRequest struct {
-	Query string `json:"query"`
-	Limit int    `json:"limit,omitempty"`
-	Mode  string `json:"mode,omitempty"`
+	Query  string `json:"query"`
+	Limit  int    `json:"limit,omitempty"`
+	Mode   string `json:"mode,omitempty"`
+	Filter string `json:"filter,omitempty"`
 }
 
 type searchResponse struct {
@@ -43,6 +44,7 @@ type searchResponse struct {
 	Mode    string         `json:"mode"`
 	Source  string         `json:"source,omitempty"`
 	Results []searchResult `json:"results"`
+	Filter  string         `json:"filter,omitempty"`
 }
 
 type searchResult struct {
@@ -118,12 +120,13 @@ func modeLabel(mode hybrid.SearchMode) string {
 	}
 }
 
-func buildSearchResponse(query string, limit int, mode hybrid.SearchMode, source string, results []codesearch.Result) searchResponse {
+func buildSearchResponse(query string, limit int, mode hybrid.SearchMode, source, filter string, results []codesearch.Result) searchResponse {
 	response := searchResponse{
 		Query:   query,
 		Limit:   limit,
 		Mode:    modeLabel(mode),
 		Source:  source,
+		Filter:  filter,
 		Results: make([]searchResult, 0, len(results)),
 	}
 	for _, result := range results {
@@ -350,6 +353,9 @@ func httpSearch(ctx context.Context, client *http.Client, address string, reques
 	queryValues.Set("q", request.Query)
 	queryValues.Set("limit", strconv.Itoa(limit))
 	queryValues.Set("mode", modeLabel(mode))
+	if request.Filter != "" {
+		queryValues.Set("filter", request.Filter)
+	}
 	parsed.RawQuery = queryValues.Encode()
 
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)

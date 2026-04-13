@@ -65,12 +65,17 @@ func runServer(out io.Writer, engine *codesearch.Engine, addr, indexDir string) 
 			return
 		}
 		limit := parseLimit(r.URL.Query().Get("limit"), defaultSearchLimit)
-		results, err := engine.Search(r.Context(), query, codesearch.WithLimit(limit), codesearch.WithMode(mode))
+		filter := r.URL.Query().Get("filter")
+		searchOptions := []codesearch.SearchOption{codesearch.WithLimit(limit), codesearch.WithMode(mode)}
+		if filter != "" {
+			searchOptions = append(searchOptions, codesearch.WithFilter(filter))
+		}
+		results, err := engine.Search(r.Context(), query, searchOptions...)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if err := writeJSON(w, http.StatusOK, buildSearchResponse(query, limit, mode, "remote", results)); err != nil {
+		if err := writeJSON(w, http.StatusOK, buildSearchResponse(query, limit, mode, "remote", filter, results)); err != nil {
 			ui.warnf("write response: %v", err)
 		}
 	})
