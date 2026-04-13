@@ -1,5 +1,5 @@
 # Binaries
-csx
+/csx
 *.exe
 *.dll
 *.so
