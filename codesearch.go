@@ -86,7 +86,7 @@ func newEngine(defaultDir string, opts ...Option) (*Engine, error) {
 	if cfg.documentStore != nil {
 		engine.Documents = cfg.documentStore
 	} else if cfg.useFileStore {
-		docStore, err := filestore.NewDocumentStore(filepath.Join(cfg.storeDir, "documents"))
+		docStore, err := filestore.NewDocumentStore(filepath.Join(cfg.storeDir, "documents"), filestore.WithFlushStrategy(filestore.FlushManual))
 		if err != nil {
 			return nil, err
 		}
@@ -100,7 +100,7 @@ func newEngine(defaultDir string, opts ...Option) (*Engine, error) {
 	if cfg.trigramStore != nil {
 		engine.Trigrams = cfg.trigramStore
 	} else if cfg.useFileStore {
-		trigramStore, err := filestore.NewTrigramStore(filepath.Join(cfg.storeDir, "trigrams"))
+		trigramStore, err := filestore.NewTrigramStore(filepath.Join(cfg.storeDir, "trigrams"), filestore.WithFlushStrategy(filestore.FlushManual))
 		if err != nil {
 			return nil, err
 		}
@@ -114,7 +114,7 @@ func newEngine(defaultDir string, opts ...Option) (*Engine, error) {
 	if cfg.vectorStore != nil {
 		engine.Vectors = cfg.vectorStore
 	} else if cfg.useFileStore {
-		vectorStore, err := filestore.NewVectorStore(filepath.Join(cfg.storeDir, "vectors"))
+		vectorStore, err := filestore.NewVectorStore(filepath.Join(cfg.storeDir, "vectors"), filestore.WithFlushStrategy(filestore.FlushManual))
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +128,7 @@ func newEngine(defaultDir string, opts ...Option) (*Engine, error) {
 	if cfg.symbolStore != nil {
 		engine.Symbols = cfg.symbolStore
 	} else if cfg.useFileStore {
-		symbolStore, err := filestore.NewSymbolStore(filepath.Join(cfg.storeDir, "symbols"))
+		symbolStore, err := filestore.NewSymbolStore(filepath.Join(cfg.storeDir, "symbols"), filestore.WithFlushStrategy(filestore.FlushManual))
 		if err != nil {
 			return nil, err
 		}
@@ -280,7 +280,7 @@ func (e *Engine) indexDocument(ctx context.Context, path string, content []byte,
 		return fmt.Errorf("index symbols for document %q: %w", documentID, err)
 	}
 
-	return e.flush()
+	return nil
 }
 
 // Search executes lexical, semantic, structural, or hybrid search.
