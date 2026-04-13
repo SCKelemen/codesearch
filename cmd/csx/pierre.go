@@ -267,25 +267,24 @@ func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch,
 
 	startedAt := time.Now()
 
-	// Map-reduce: download repos in parallel via pool, index serially.
+	// Pipeline: Source -> Download (parallel) -> Index (serial sink)
 	type pierreDownload struct {
 		repoName string
 		files    []indexedEntry
 		err      error
 	}
 
-	type pierreIndexSummary struct {
-		totalFiles     int
-		totalBytes     int64
-		indexedRepos   int
-		processedRepos int
-		skippedRepos   int
-		downloadBytes  int64
-		languages      map[string]int
-	}
+	repoQueue := pool.NewQueue[pierreRepo](len(repos))
+	downloadQueue := pool.NewQueue[pierreDownload](concurrency)
 
-	summary, err := pool.MapReduce(ctx, repos, min(4, len(repos)),
-		func(ctx context.Context, repo pierreRepo) (pierreDownload, error) {
+	// Stage 1: Push discovered repos onto the queue
+	pool.Source(ctx, repos, repoQueue)
+
+	// Stage 2: Download repos in parallel
+	pool.RunStage(ctx, pool.Stage[pierreRepo, pierreDownload]{
+		Name:        "download",
+		Concurrency: min(concurrency, len(repos)),
+		Process: func(ctx context.Context, repo pierreRepo) (pierreDownload, error) {
 			ref := branch
 			if ref == "" {
 				ref = repo.DefaultBranch
@@ -296,34 +295,40 @@ func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch,
 			entries, downloadErr := downloadPierreRepo(ctx, client, repo, ref, langFilters, concurrency)
 			return pierreDownload{repoName: repo.Name, files: entries, err: downloadErr}, nil
 		},
-		func(ctx context.Context, acc pierreIndexSummary, dl pierreDownload) (pierreIndexSummary, error) {
-			acc.processedRepos++
-			ui.info("[%d/%d] %s", acc.processedRepos, len(repos), dl.repoName)
-			if dl.err != nil {
-				ui.info("  skip: %v", dl.err)
-				return acc, nil
-			}
-			if len(dl.files) == 0 {
-				ui.info("  skip: no indexable files")
-				return acc, nil
-			}
+	}, repoQueue, downloadQueue)
 
-			repoFiles, repoBytes, indexErr := indexDownloadedFiles(ctx, engine, dl.files)
-			if indexErr != nil {
-				ui.info("  skip: %v", indexErr)
-				return acc, nil
-			}
+	// Stage 3: Index serially as downloads arrive (sink)
+	var totalFiles int
+	var totalBytes int64
+	var indexedRepos int
+	var processedRepos int
 
-			acc.totalFiles += repoFiles
-			acc.totalBytes += repoBytes
-			acc.indexedRepos++
-			ui.info("  indexed %d files (%s)", repoFiles, humanBytes(repoBytes))
-			return acc, nil
-		},
-		pierreIndexSummary{},
-	)
-	if err != nil {
-		return fmt.Errorf("index repos: %w", err)
+	sinkErr := pool.Sink(ctx, downloadQueue, func(ctx context.Context, dl pierreDownload) error {
+		processedRepos++
+		ui.info("[%d/%d] %s", processedRepos, len(repos), dl.repoName)
+		if dl.err != nil {
+			ui.info("  skip: %v", dl.err)
+			return nil
+		}
+		if len(dl.files) == 0 {
+			ui.info("  skip: no indexable files")
+			return nil
+		}
+
+		repoFiles, repoBytes, indexErr := indexDownloadedFiles(ctx, engine, dl.files)
+		if indexErr != nil {
+			ui.info("  skip: %v", indexErr)
+			return nil
+		}
+
+		totalFiles += repoFiles
+		totalBytes += repoBytes
+		indexedRepos++
+		ui.info("  indexed %d files (%s)", repoFiles, humanBytes(repoBytes))
+		return nil
+	})
+	if sinkErr != nil {
+		return fmt.Errorf("index repos: %w", sinkErr)
 	}
 
 	if err := engine.Close(); err != nil {
@@ -331,6 +336,7 @@ func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch,
 	}
 
 	elapsed := time.Since(startedAt).Round(time.Millisecond)
+	skippedRepos := len(repos) - indexedRepos
 	ui.println("")
 	ui.section("Summary")
 	if shallow {
@@ -340,16 +346,12 @@ func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch,
 	}
 	ui.kv("started", startedAt.Format(time.RFC3339))
 	ui.kv("elapsed", elapsed.String())
-	ui.kv("repos", fmt.Sprintf("%d indexed, %d skipped, %d total", summary.indexedRepos, summary.skippedRepos, len(repos)))
-	ui.kv("files", fmt.Sprintf("%d", summary.totalFiles))
-	ui.kv("content", humanBytes(summary.totalBytes))
-	ui.kv("downloaded", humanBytes(summary.downloadBytes))
-	if len(summary.languages) > 0 {
-		ui.kv("languages", fmt.Sprintf("%d", len(summary.languages)))
-	}
+	ui.kv("repos", fmt.Sprintf("%d indexed, %d skipped, %d total", indexedRepos, skippedRepos, len(repos)))
+	ui.kv("files", fmt.Sprintf("%d", totalFiles))
+	ui.kv("content", humanBytes(totalBytes))
 	ui.kv("output", resolvedOutput)
 	ui.println("")
-	ui.successf("indexed %d repos, %d files (%s) in %s", summary.indexedRepos, summary.totalFiles, humanBytes(summary.totalBytes), elapsed)
+	ui.successf("indexed %d repos, %d files (%s) in %s", indexedRepos, totalFiles, humanBytes(totalBytes), elapsed)
 	ui.info("search with: csx search --index %s <query>", resolvedOutput)
 
 	return nil
