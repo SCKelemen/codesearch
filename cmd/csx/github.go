@@ -105,6 +105,11 @@ func runGitHub(ctx *clix.Context, ui *cliUI, token, user, org, outputDir string,
 		return fmt.Errorf("create output directory: %w", err)
 	}
 
+	engine, err := openEngine(resolvedOutput)
+	if err != nil {
+		return fmt.Errorf("open index: %w", err)
+	}
+
 	startedAt := time.Now()
 	var totalFiles int
 	var totalBytes int64
@@ -112,11 +117,10 @@ func runGitHub(ctx *clix.Context, ui *cliUI, token, user, org, outputDir string,
 
 	for i, repo := range repos {
 		repoName := repo.GetFullName()
-		repoDir := filepath.Join(resolvedOutput, strings.ReplaceAll(repoName, "/", "_"))
 
 		ui.info("[%d/%d] %s", i+1, len(repos), repoName)
 
-		files, bytes, err := indexGitHubRepo(ctx, client, repo, repoDir, langFilters)
+		files, bytes, err := indexGitHubRepo(ctx, client, repo, engine, langFilters)
 		if err != nil {
 			ui.info("  skip: %v", err)
 			continue
@@ -126,6 +130,10 @@ func runGitHub(ctx *clix.Context, ui *cliUI, token, user, org, outputDir string,
 		totalBytes += bytes
 		indexedRepos++
 		ui.info("  indexed %d files (%s)", files, humanBytes(bytes))
+	}
+
+	if err := engine.Close(); err != nil {
+		return fmt.Errorf("flush index: %w", err)
 	}
 
 	elapsed := time.Since(startedAt).Round(time.Millisecond)
@@ -192,7 +200,7 @@ func discoverRepos(ctx *clix.Context, client *github.Client, user, org string, m
 	return allRepos, nil
 }
 
-func indexGitHubRepo(ctx *clix.Context, client *github.Client, repo *github.Repository, outputDir string, langFilters map[string]struct{}) (int, int64, error) {
+func indexGitHubRepo(ctx *clix.Context, client *github.Client, repo *github.Repository, engine *codesearch.Engine, langFilters map[string]struct{}) (int, int64, error) {
 	owner := repo.GetOwner().GetLogin()
 	name := repo.GetName()
 	branch := repo.GetDefaultBranch()
@@ -231,16 +239,6 @@ func indexGitHubRepo(ctx *clix.Context, client *github.Client, repo *github.Repo
 		return 0, 0, fmt.Errorf("no indexable files")
 	}
 
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return 0, 0, fmt.Errorf("create dir: %w", err)
-	}
-
-	engine, err := openEngine(outputDir)
-	if err != nil {
-		return 0, 0, fmt.Errorf("open index: %w", err)
-	}
-	defer func() { _ = engine.Close() }()
-
 	var totalBytes int64
 	var indexed int
 
@@ -256,7 +254,7 @@ func indexGitHubRepo(ctx *clix.Context, client *github.Client, repo *github.Repo
 		}
 
 		// Write to temp file for indexing
-		tmpDir := filepath.Join(outputDir, ".tmp")
+		tmpDir := filepath.Join(os.TempDir(), "csx-github-tmp", owner, name)
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(tmpDir, path)), 0o755); err != nil {
 			continue
 		}
@@ -275,11 +273,7 @@ func indexGitHubRepo(ctx *clix.Context, client *github.Client, repo *github.Repo
 	}
 
 	// Clean up temp files
-	_ = os.RemoveAll(filepath.Join(outputDir, ".tmp"))
-
-	if err := engine.Close(); err != nil {
-		return indexed, totalBytes, fmt.Errorf("flush index: %w", err)
-	}
+	_ = os.RemoveAll(filepath.Join(os.TempDir(), "csx-github-tmp"))
 
 	return indexed, totalBytes, nil
 }
