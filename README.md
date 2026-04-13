@@ -348,6 +348,87 @@ GITHUB_TOKEN=$(gh auth token) csx github --user SCKelemen --max-repos 5 && csx s
 If the tarball API is unavailable, falls back to parallel per-file fetching via
 the Contents API (`--concurrency` controls the worker count, default 8).
 
+
+### `csx pierre`
+
+Index repositories from a [Pierre/code.storage](https://code.storage) instance.
+Uses the archive API for fast single-request downloads, with automatic fallback
+to parallel per-file fetching via the file API.
+
+#### Authentication
+
+Pierre requires a base URL and an API token. See the
+[Pierre authentication docs](https://code.storage/docs/getting-started/authentication)
+for how to obtain credentials.
+
+**Option 1: Environment variables (recommended)**
+
+```bash
+export PIERRE_URL=https://lovable.code.storage
+export PIERRE_TOKEN=your-api-token
+csx pierre
+```
+
+**Option 2: CLI flags**
+
+```bash
+csx pierre --url https://lovable.code.storage --token your-api-token
+```
+
+#### Examples
+
+```bash
+# Index all repos from a Pierre instance
+csx pierre --url https://lovable.code.storage --token $PIERRE_TOKEN
+
+# Index a specific repo
+csx pierre --repo my-project
+
+# Index a specific branch
+csx pierre --repo my-project --branch develop
+
+# Filter by language
+csx pierre --language go,ts,js
+
+# Limit number of repos
+csx pierre --max-repos 10
+
+# Custom output directory
+csx pierre --output ~/.csx/pierre-repos
+
+# Search indexed Pierre repos
+csx search --index .csx/pierre "func handleRequest"
+```
+
+#### How it works
+
+1. **Discover** — Lists repositories via `GET /api/v1/repos`
+2. **Resolve branch** — Uses `--branch`, repo default branch, or `main`
+3. **Download** — Fetches `GET /api/v1/repos/{id}/archive?ref={ref}` (tar.gz).
+   Falls back to `GET /api/v1/repos/{id}/files` + parallel
+   `GET /api/v1/repos/{id}/file/{path}` if archive is unavailable
+4. **Filter** — Skips binaries, vendor dirs, files over 1 MB
+5. **Index** — Builds trigram + content indexes with URI scheme
+   `pierre://{repo}/{path}@{ref}`
+
+#### Pierre API endpoints used
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/v1/repos` | List available repositories |
+| `GET /api/v1/repos/{id}/branches` | List branches (for future multi-branch indexing) |
+| `GET /api/v1/repos/{id}/archive?ref=` | Download repo as tar.gz (primary path) |
+| `GET /api/v1/repos/{id}/files?ref=` | List files with metadata (fallback path) |
+| `GET /api/v1/repos/{id}/file/{path}?ref=` | Fetch individual file content (fallback path) |
+| `GET /api/v1/repos/{id}/grep` | Server-side grep (reserved for future hybrid search) |
+
+#### Webhooks (Lovable platform integration)
+
+When running as part of the Lovable platform, Pierre
+[webhooks](https://code.storage/docs/guides/webhooks) trigger automatic
+re-indexing on push events. The `csx` CLI indexes on-demand; the Lovable
+service layer uses webhooks for real-time index freshness via Temporal workflows.
+
 ### `csx lsif`
 
 Generate LSIF JSON Lines output from LSP-backed analysis.
