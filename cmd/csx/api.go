@@ -53,6 +53,7 @@ type searchResult struct {
 	Score   float64      `json:"score"`
 	Snippet string       `json:"snippet,omitempty"`
 	Matches []matchRange `json:"matches,omitempty"`
+	Content string       `json:"-"`
 }
 
 type matchRange struct {
@@ -135,6 +136,7 @@ func buildSearchResponse(query string, limit int, mode hybrid.SearchMode, source
 			Line:    result.Line,
 			Score:   result.Score,
 			Snippet: result.Snippet,
+			Content: result.Content,
 		}
 		if len(result.Matches) != 0 {
 			entry.Matches = make([]matchRange, 0, len(result.Matches))

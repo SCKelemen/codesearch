@@ -35,6 +35,7 @@ func newSearchCommand() *clix.Command {
 	var limit int
 	var jsonOutput bool
 	var filter string
+	var contextLines int
 
 	cmd.Flags.StringVar(clix.StringVarOptions{
 		FlagOptions: clix.FlagOptions{Name: "index", Short: "i", Usage: "Path to the local index directory"},
@@ -58,6 +59,11 @@ func newSearchCommand() *clix.Command {
 	cmd.Flags.StringVar(clix.StringVarOptions{
 		FlagOptions: clix.FlagOptions{Name: "filter", Short: "f", Usage: `CEL filter expression (e.g. 'language == "go"' or 'file_size < 10000')`},
 		Value:       &filter,
+	})
+	cmd.Flags.IntVar(clix.IntVarOptions{
+		FlagOptions: clix.FlagOptions{Name: "context", Short: "C", Usage: "Number of context lines before and after the match (default 2)"},
+		Default:     "2",
+		Value:       &contextLines,
 	})
 	cmd.Flags.StringVar(clix.StringVarOptions{
 		FlagOptions: clix.FlagOptions{Name: "remote", Short: "r", Usage: "Remote server address, for example 127.0.0.1:8080"},
@@ -86,7 +92,7 @@ func newSearchCommand() *clix.Command {
 		if jsonOutput {
 			return renderSearchJSON(ctx.App.Out, response)
 		}
-		return renderSearchText(ctx.App.Out, response)
+		return renderSearchText(ctx.App.Out, response, contextLines)
 	}
 	return cmd
 }
@@ -136,7 +142,7 @@ func renderSearchJSON(out io.Writer, response searchResponse) error {
 	return encoder.Encode(response)
 }
 
-func renderSearchText(out io.Writer, response searchResponse) error {
+func renderSearchText(out io.Writer, response searchResponse, contextLines int) error {
 	ui := newCLIUI(out)
 	ui.section("Search results")
 	ui.kv("query", fmt.Sprintf("%q", response.Query))
@@ -169,7 +175,9 @@ func renderSearchText(out io.Writer, response searchResponse) error {
 			location = ui.label(fmt.Sprintf(":%d", result.Line))
 		}
 		ui.println(fmt.Sprintf("%2d. %s%s %s", i+1, ui.path(result.Path, 72), location, ui.label(fmt.Sprintf("%.3f", result.Score))))
-		if result.Snippet != "" {
+		if result.Content != "" && result.Line > 0 && contextLines >= 0 {
+			renderContextSnippet(ui, result, contextLines)
+		} else if result.Snippet != "" {
 			ui.println("    " + highlightSnippet(ui, result.Snippet, result.Matches))
 		}
 	}
@@ -340,4 +348,47 @@ func readRemoteError(body io.Reader) string {
 		}
 	}
 	return trimmed
+}
+
+// renderContextSnippet renders the match line with surrounding context lines.
+// Context lines are shown with their line numbers, and the match line is
+// highlighted with the accent color.
+func renderContextSnippet(ui *cliUI, result searchResult, contextLines int) {
+	lines := strings.Split(result.Content, "\n")
+	matchIdx := result.Line - 1 // 0-based index
+	if matchIdx < 0 || matchIdx >= len(lines) {
+		if result.Snippet != "" {
+			ui.println("    " + highlightSnippet(ui, result.Snippet, result.Matches))
+		}
+		return
+	}
+
+	startLine := matchIdx - contextLines
+	if startLine < 0 {
+		startLine = 0
+	}
+	endLine := matchIdx + contextLines
+	if endLine >= len(lines) {
+		endLine = len(lines) - 1
+	}
+
+	// Compute the widest line number for alignment
+	maxLineNo := endLine + 1
+	lineNoWidth := len(fmt.Sprintf("%d", maxLineNo))
+	lineNoFmt := fmt.Sprintf("%%%dd", lineNoWidth)
+
+	for idx := startLine; idx <= endLine; idx++ {
+		lineNo := fmt.Sprintf(lineNoFmt, idx+1)
+		lineContent := strings.ReplaceAll(lines[idx], "\t", "    ")
+		truncated := ui.text.ElideEnd(lineContent, ui.width-float64(lineNoWidth)-8)
+
+		if idx == matchIdx {
+			// Match line: highlight with accent color and apply match ranges
+			highlighted := highlightSnippet(ui, lines[idx], result.Matches)
+			ui.println(fmt.Sprintf("    %s %s %s", ui.paint(ui.accent, lineNo), ui.paint(ui.accent, "│"), highlighted))
+		} else {
+			// Context line: muted
+			ui.println(fmt.Sprintf("    %s %s %s", ui.paint(ui.muted, lineNo), ui.paint(ui.muted, "│"), ui.paint(ui.muted, truncated)))
+		}
+	}
 }

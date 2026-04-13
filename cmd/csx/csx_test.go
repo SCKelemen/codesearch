@@ -341,7 +341,7 @@ func TestRenderAndConversionHelpers(t *testing.T) {
 	}
 
 	var textOutput bytes.Buffer
-	if err := renderSearchText(&textOutput, response); err != nil {
+	if err := renderSearchText(&textOutput, response, 2); err != nil {
 		t.Fatalf("renderSearchText() error = %v", err)
 	}
 	clean := stripANSI(textOutput.String())
@@ -352,7 +352,7 @@ func TestRenderAndConversionHelpers(t *testing.T) {
 	}
 
 	var emptyOutput bytes.Buffer
-	if err := renderSearchText(&emptyOutput, searchResponse{Query: "missing", Mode: "lexical"}); err != nil {
+	if err := renderSearchText(&emptyOutput, searchResponse{Query: "missing", Mode: "lexical"}, 2); err != nil {
 		t.Fatalf("renderSearchText(empty) error = %v", err)
 	}
 	if !strings.Contains(stripANSI(emptyOutput.String()), "no matches found") {
