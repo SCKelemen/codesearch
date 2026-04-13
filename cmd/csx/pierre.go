@@ -235,6 +235,7 @@ func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch,
 	client := newPierreClient(baseURL, token)
 
 	ui.section("Pierre Code Search Indexer")
+	ui.info("discovering repositories...")
 
 	repos, err := discoverPierreRepos(ctx, client, repoFilter, maxRepos)
 	if err != nil {
@@ -326,18 +327,19 @@ func discoverPierreRepos(ctx *clix.Context, client *pierreClient, repoFilter str
 // indexPierreRepo indexes a single Pierre repository. Tries the archive API
 // first, falls back to parallel per-file fetching.
 func indexPierreRepo(ctx *clix.Context, client *pierreClient, repo pierreRepo, ref string, engine *codesearch.Engine, langFilters map[string]struct{}, concurrency int, ui *cliUI) (int, int64, error) {
-	files, bytes, err := indexPierreViaTarball(ctx, client, repo, ref, engine, langFilters)
+	files, bytes, err := indexPierreViaTarball(ctx, client, repo, ref, engine, langFilters, ui)
 	if err == nil {
 		return files, bytes, nil
 	}
 
 	ui.info("  archive unavailable (%v), using parallel file fetch", err)
 
-	return indexPierreViaFiles(ctx, client, repo, ref, engine, langFilters, concurrency)
+	return indexPierreViaFiles(ctx, client, repo, ref, engine, langFilters, concurrency, ui)
 }
 
 // indexPierreViaTarball downloads the repo archive and indexes in a single pass.
-func indexPierreViaTarball(ctx context.Context, client *pierreClient, repo pierreRepo, ref string, engine *codesearch.Engine, langFilters map[string]struct{}) (int, int64, error) {
+func indexPierreViaTarball(ctx context.Context, client *pierreClient, repo pierreRepo, ref string, engine *codesearch.Engine, langFilters map[string]struct{}, ui *cliUI) (int, int64, error) {
+	ui.info("  downloading archive for %s@%s...", repo.Name, ref)
 	body, err := client.getArchive(ctx, repo.ID, ref)
 	if err != nil {
 		return 0, 0, err
@@ -408,13 +410,16 @@ func indexPierreViaTarball(ctx context.Context, client *pierreClient, repo pierr
 
 		indexed++
 		totalBytes += int64(len(content))
+		if indexed == 1 || indexed%25 == 0 {
+			ui.info("    tarball indexed %d files (%s)", indexed, humanBytes(totalBytes))
+		}
 	}
 
 	return indexed, totalBytes, nil
 }
 
 // indexPierreViaFiles fetches files in parallel using the Pierre file API.
-func indexPierreViaFiles(ctx context.Context, client *pierreClient, repo pierreRepo, ref string, engine *codesearch.Engine, langFilters map[string]struct{}, concurrency int) (int, int64, error) {
+func indexPierreViaFiles(ctx context.Context, client *pierreClient, repo pierreRepo, ref string, engine *codesearch.Engine, langFilters map[string]struct{}, concurrency int, ui *cliUI) (int, int64, error) {
 	files, err := client.listFiles(ctx, repo.ID, ref)
 	if err != nil {
 		return 0, 0, err
@@ -440,6 +445,8 @@ func indexPierreViaFiles(ctx context.Context, client *pierreClient, repo pierreR
 	if len(entries) == 0 {
 		return 0, 0, fmt.Errorf("no indexable files")
 	}
+
+	ui.info("  fetching %d files via Pierre API...", len(entries))
 
 	type result struct {
 		path    string
@@ -481,8 +488,10 @@ func indexPierreViaFiles(ctx context.Context, client *pierreClient, repo pierreR
 
 	var indexed int
 	var totalBytes int64
+	var processed int
 
 	for r := range results {
+		processed++
 		tmpPath := filepath.Join(tmpDir, r.path)
 		if err := os.MkdirAll(filepath.Dir(tmpPath), 0o755); err != nil {
 			continue
@@ -498,6 +507,9 @@ func indexPierreViaFiles(ctx context.Context, client *pierreClient, repo pierreR
 
 		indexed++
 		totalBytes += int64(len(r.content))
+		if processed == 1 || processed == len(entries) || processed%25 == 0 {
+			ui.info("    indexed %d/%d files (%s)", processed, len(entries), humanBytes(totalBytes))
+		}
 	}
 
 	if indexed == 0 && fetchErrors.Load() > 0 {

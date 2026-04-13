@@ -104,7 +104,8 @@ func runGitHub(ctx *clix.Context, ui *cliUI, token, user, org, outputDir string,
 
 	ui.section("GitHub Code Search Indexer")
 
-	repos, err := discoverRepos(ctx, client, user, org, maxRepos, includeArchived, includeForked)
+	ui.info("discovering repositories...")
+	repos, err := discoverRepos(ctx, client, user, org, maxRepos, includeArchived, includeForked, ui)
 	if err != nil {
 		return fmt.Errorf("discover repos: %w", err)
 	}
@@ -197,6 +198,7 @@ func indexViaTarball(ctx context.Context, client *github.Client, owner, name, br
 		return 0, 0, fmt.Errorf("create request: %w", err)
 	}
 
+	ui.info("  downloading tarball...")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, 0, fmt.Errorf("download tarball: %w", err)
@@ -274,6 +276,9 @@ func indexViaTarball(ctx context.Context, client *github.Client, owner, name, br
 
 		indexed++
 		totalBytes += int64(len(content))
+		if indexed == 1 || indexed%50 == 0 {
+			ui.info("  extracting... %d files (%s)", indexed, humanBytes(totalBytes))
+		}
 	}
 
 	return indexed, totalBytes, nil
@@ -381,7 +386,7 @@ func indexViaContentsAPI(ctx context.Context, client *github.Client, owner, name
 	return indexed, totalBytes, nil
 }
 
-func discoverRepos(ctx *clix.Context, client *github.Client, user, org string, maxRepos int, includeArchived, includeForked bool) ([]*github.Repository, error) {
+func discoverRepos(ctx *clix.Context, client *github.Client, user, org string, maxRepos int, includeArchived, includeForked bool, ui *cliUI) ([]*github.Repository, error) {
 	var allRepos []*github.Repository
 	opts := &github.RepositoryListOptions{
 		Sort:        "updated",
@@ -430,6 +435,7 @@ func discoverRepos(ctx *clix.Context, client *github.Client, user, org string, m
 		if resp.NextPage == 0 {
 			break
 		}
+		ui.info("  found %d repos so far, fetching page %d...", len(allRepos), resp.NextPage)
 		opts.Page = resp.NextPage
 	}
 
