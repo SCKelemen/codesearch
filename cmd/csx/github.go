@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SCKelemen/codesearch/pool"
+
 	"github.com/SCKelemen/clix"
 	"github.com/SCKelemen/codesearch"
 	"github.com/google/go-github/v72/github"
@@ -128,69 +130,54 @@ func runGitHub(ctx *clix.Context, ui *cliUI, token, user, org, outputDir string,
 	}
 
 	startedAt := time.Now()
-	var totalFiles int
-	var totalBytes int64
-	var indexedRepos int
 
-	// Map-reduce: download repos in parallel, index serially.
-	type repoResult struct {
+	// Map-reduce: download repos in parallel via pool, index serially.
+	type repoDownload struct {
 		repoName string
-		index    int
 		files    []indexedEntry
 		err      error
 	}
 
-	downloadWorkers := min(4, len(repos))
-	jobs := make(chan int, len(repos))
-	results := make(chan repoResult, downloadWorkers*2)
-
-	// Map: parallel downloads
-	var downloadWg sync.WaitGroup
-	for w := 0; w < downloadWorkers; w++ {
-		downloadWg.Add(1)
-		go func() {
-			defer downloadWg.Done()
-			for idx := range jobs {
-				repo := repos[idx]
-				repoName := repo.GetFullName()
-				entries, err := downloadGitHubRepo(ctx, client, repo, langFilters, concurrency)
-				results <- repoResult{repoName: repoName, index: idx, files: entries, err: err}
-			}
-		}()
+	type githubIndexSummary struct {
+		totalFiles     int
+		totalBytes     int64
+		indexedRepos   int
+		processedRepos int
 	}
 
-	// Feed jobs
-	go func() {
-		for i := range repos {
-			jobs <- i
-		}
-		close(jobs)
-		downloadWg.Wait()
-		close(results)
-	}()
+	summary, err := pool.MapReduce(ctx, repos, min(4, len(repos)),
+		func(ctx context.Context, repo *github.Repository) (repoDownload, error) {
+			entries, downloadErr := downloadGitHubRepo(ctx, client, repo, langFilters, concurrency)
+			return repoDownload{repoName: repo.GetFullName(), files: entries, err: downloadErr}, nil
+		},
+		func(ctx context.Context, acc githubIndexSummary, dl repoDownload) (githubIndexSummary, error) {
+			acc.processedRepos++
+			ui.info("[%d/%d] %s", acc.processedRepos, len(repos), dl.repoName)
+			if dl.err != nil {
+				ui.info("  skip: %v", dl.err)
+				return acc, nil
+			}
+			if len(dl.files) == 0 {
+				ui.info("  skip: no indexable files")
+				return acc, nil
+			}
 
-	// Reduce: index serially from channel
-	for r := range results {
-		ui.info("[%d/%d] %s", r.index+1, len(repos), r.repoName)
-		if r.err != nil {
-			ui.info("  skip: %v", r.err)
-			continue
-		}
-		if len(r.files) == 0 {
-			ui.info("  skip: no indexable files")
-			continue
-		}
+			repoFiles, repoBytes, indexErr := indexDownloadedFiles(ctx, engine, dl.files)
+			if indexErr != nil {
+				ui.info("  skip: %v", indexErr)
+				return acc, nil
+			}
 
-		repoFiles, repoBytes, err := indexDownloadedFiles(ctx, engine, r.files)
-		if err != nil {
-			ui.info("  skip: %v", err)
-			continue
-		}
-
-		totalFiles += repoFiles
-		totalBytes += repoBytes
-		indexedRepos++
-		ui.info("  indexed %d files (%s)", repoFiles, humanBytes(repoBytes))
+			acc.totalFiles += repoFiles
+			acc.totalBytes += repoBytes
+			acc.indexedRepos++
+			ui.info("  indexed %d files (%s)", repoFiles, humanBytes(repoBytes))
+			return acc, nil
+		},
+		githubIndexSummary{},
+	)
+	if err != nil {
+		return fmt.Errorf("index repos: %w", err)
 	}
 
 	if err := engine.Close(); err != nil {
@@ -198,7 +185,7 @@ func runGitHub(ctx *clix.Context, ui *cliUI, token, user, org, outputDir string,
 	}
 
 	elapsed := time.Since(startedAt).Round(time.Millisecond)
-	ui.successf("indexed %d repos, %d files (%s) in %s", indexedRepos, totalFiles, humanBytes(totalBytes), elapsed)
+	ui.successf("indexed %d repos, %d files (%s) in %s", summary.indexedRepos, summary.totalFiles, humanBytes(summary.totalBytes), elapsed)
 	ui.info("indexes stored in %s", resolvedOutput)
 	ui.info("")
 	ui.info("search with: csx search --index %s <query>", resolvedOutput)

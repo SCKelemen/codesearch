@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SCKelemen/codesearch/pool"
+
 	"github.com/SCKelemen/clix"
 )
 
@@ -259,74 +261,61 @@ func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch,
 	}
 
 	startedAt := time.Now()
-	var totalFiles int
-	var totalBytes int64
-	var indexedRepos int
 
-	// Map-reduce: download repos in parallel, index serially.
-	type pierreRepoResult struct {
+	// Map-reduce: download repos in parallel via pool, index serially.
+	type pierreDownload struct {
 		repoName string
-		index    int
 		files    []indexedEntry
 		err      error
 	}
 
-	downloadWorkers := min(4, len(repos))
-	jobs := make(chan int, len(repos))
-	results := make(chan pierreRepoResult, downloadWorkers*2)
-
-	// Map: parallel downloads
-	var downloadWg sync.WaitGroup
-	for w := 0; w < downloadWorkers; w++ {
-		downloadWg.Add(1)
-		go func() {
-			defer downloadWg.Done()
-			for idx := range jobs {
-				repo := repos[idx]
-				ref := branch
-				if ref == "" {
-					ref = repo.DefaultBranch
-				}
-				if ref == "" {
-					ref = "main"
-				}
-				entries, err := downloadPierreRepo(ctx, client, repo, ref, langFilters, concurrency)
-				results <- pierreRepoResult{repoName: repo.Name, index: idx, files: entries, err: err}
-			}
-		}()
+	type pierreIndexSummary struct {
+		totalFiles     int
+		totalBytes     int64
+		indexedRepos   int
+		processedRepos int
 	}
 
-	go func() {
-		for i := range repos {
-			jobs <- i
-		}
-		close(jobs)
-		downloadWg.Wait()
-		close(results)
-	}()
+	summary, err := pool.MapReduce(ctx, repos, min(4, len(repos)),
+		func(ctx context.Context, repo pierreRepo) (pierreDownload, error) {
+			ref := branch
+			if ref == "" {
+				ref = repo.DefaultBranch
+			}
+			if ref == "" {
+				ref = "main"
+			}
+			entries, downloadErr := downloadPierreRepo(ctx, client, repo, ref, langFilters, concurrency)
+			return pierreDownload{repoName: repo.Name, files: entries, err: downloadErr}, nil
+		},
+		func(ctx context.Context, acc pierreIndexSummary, dl pierreDownload) (pierreIndexSummary, error) {
+			acc.processedRepos++
+			ui.info("[%d/%d] %s", acc.processedRepos, len(repos), dl.repoName)
+			if dl.err != nil {
+				ui.info("  skip: %v", dl.err)
+				return acc, nil
+			}
+			if len(dl.files) == 0 {
+				ui.info("  skip: no indexable files")
+				return acc, nil
+			}
 
-	// Reduce: index serially from channel
-	for r := range results {
-		ui.info("[%d/%d] %s", r.index+1, len(repos), r.repoName)
-		if r.err != nil {
-			ui.info("  skip: %v", r.err)
-			continue
-		}
-		if len(r.files) == 0 {
-			ui.info("  skip: no indexable files")
-			continue
-		}
+			repoFiles, repoBytes, indexErr := indexDownloadedFiles(ctx, engine, dl.files)
+			if indexErr != nil {
+				ui.info("  skip: %v", indexErr)
+				return acc, nil
+			}
 
-		repoFiles, repoBytes, err := indexDownloadedFiles(ctx, engine, r.files)
-		if err != nil {
-			ui.info("  skip: %v", err)
-			continue
-		}
-
-		totalFiles += repoFiles
-		totalBytes += repoBytes
-		indexedRepos++
-		ui.info("  indexed %d files (%s)", repoFiles, humanBytes(repoBytes))
+			acc.totalFiles += repoFiles
+			acc.totalBytes += repoBytes
+			acc.indexedRepos++
+			ui.info("  indexed %d files (%s)", repoFiles, humanBytes(repoBytes))
+			return acc, nil
+		},
+		pierreIndexSummary{},
+	)
+	if err != nil {
+		return fmt.Errorf("index repos: %w", err)
 	}
 
 	if err := engine.Close(); err != nil {
@@ -334,7 +323,7 @@ func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch,
 	}
 
 	elapsed := time.Since(startedAt).Round(time.Millisecond)
-	ui.successf("indexed %d repos, %d files (%s) in %s", indexedRepos, totalFiles, humanBytes(totalBytes), elapsed)
+	ui.successf("indexed %d repos, %d files (%s) in %s", summary.indexedRepos, summary.totalFiles, humanBytes(summary.totalBytes), elapsed)
 	ui.info("indexes stored in %s", resolvedOutput)
 	ui.info("")
 	ui.info("search with: csx search --index %s <query>", resolvedOutput)
