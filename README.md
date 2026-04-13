@@ -158,6 +158,196 @@ func main() {
 }
 ```
 
+## Querying
+
+### Search modes
+
+Every search runs in one of three modes, selected with `--mode` (CLI) or
+`codesearch.WithMode()` (library):
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| **Hybrid** | `--mode hybrid` | Runs all configured backends (lexical + semantic) and fuses the results. Default. |
+| **Lexical** | `--mode lexical` | Trigram posting lists narrow candidates, then exact/regex matching confirms hits. Fast, precise, no embeddings required. |
+| **Semantic** | `--mode semantic` | Vector similarity search over document embeddings. Finds conceptually related code even when keywords differ. Requires `--embeddings` at index time. |
+
+**When to use which:**
+
+- **Lexical** — exact identifier lookup, error messages, import paths, known strings
+- **Semantic** — "find code that handles authentication", "functions similar to X"
+- **Hybrid** — best of both; the default for most workflows
+
+### CEL filter expressions
+
+Results can be filtered with [CEL](https://github.com/google/cel-spec)
+(Common Expression Language) expressions. Filters run server-side and reduce
+results before they are returned.
+
+#### CLI usage
+
+```bash
+csx search "handleRequest" --filter 'language == "go"'
+csx search "TODO" --filter 'file_extension == ".ts" && file_size < 5000'
+csx search "auth" --filter 'repository == "SCKelemen/codesearch"'
+csx search "fix" --filter 'file_path.startsWith("cmd/")'
+```
+
+#### Library usage
+
+```go
+results, err := engine.Search(ctx, "handleRequest",
+    codesearch.WithFilter(`language == "go" && file_size < 10000`),
+    codesearch.WithLimit(20),
+)
+```
+
+#### Available filter variables
+
+##### File attributes
+
+| Variable | Type | Description | Example |
+|----------|------|-------------|---------|
+| `language` | `string` | Normalized language name (lowercase) | `"go"`, `"typescript"`, `"python"` |
+| `file_path` | `string` | Full file path or URI | `"cmd/csx/search.go"` |
+| `file_extension` | `string` | Lowercase file extension including dot | `".go"`, `".ts"`, `".py"` |
+| `file_size` | `int` | File size in bytes | `2048` |
+
+##### Repository attributes
+
+| Variable | Type | Description | Example |
+|----------|------|-------------|---------|
+| `branch` | `string` | Git branch name | `"main"`, `"develop"` |
+| `repository` | `string` | Repository identifier (owner/name) | `"SCKelemen/codesearch"` |
+| `project_id` | `string` | Project identifier (when set) | `"proj_123"` |
+
+##### Commit attributes
+
+Available when `--git` is used during indexing (`csx index --git`):
+
+| Variable | Type | Description | Example |
+|----------|------|-------------|---------|
+| `commit_author` | `string` | Author email of the last commit | `"sam@example.com"` |
+| `commit_author_name` | `string` | Author name of the last commit | `"Sam"` |
+| `commit_committer` | `string` | Committer email | `"ci@example.com"` |
+| `commit_date` | `timestamp` | Author date of the last commit | `timestamp("2025-01-15T10:30:00Z")` |
+| `commit_message` | `string` | Subject line of the last commit | `"fix: resolve auth bug"` |
+| `commit_coauthors` | `list(string)` | Co-author emails from trailers | `["alex@example.com"]` |
+| `commit_source` | `string` | Source platform | `"github"` |
+| `commit_is_agent` | `bool` | Whether the commit was made by an agent | `false` |
+
+#### CEL operators and functions
+
+CEL supports standard operators and string functions:
+
+```bash
+# Equality and comparison
+--filter 'language == "go"'
+--filter 'file_size > 1000 && file_size < 50000'
+--filter 'file_size >= 1024'
+
+# Logical operators
+--filter 'language == "go" || language == "rust"'
+--filter '!(language == "markdown")'
+--filter 'language == "typescript" && branch == "main"'
+
+# String functions
+--filter 'file_path.startsWith("cmd/")'
+--filter 'file_path.endsWith("_test.go")'
+--filter 'file_path.contains("internal")'
+--filter 'commit_message.contains("fix")'
+
+# List membership
+--filter '"sam@example.com" in commit_coauthors'
+
+# Timestamp comparison
+--filter 'commit_date > timestamp("2025-01-01T00:00:00Z")'
+--filter 'commit_date > timestamp("2025-06-01T00:00:00Z") && language == "go"'
+
+# Negation
+--filter 'file_extension != ".md" && file_extension != ".txt"'
+```
+
+#### Filter examples by use case
+
+**Find recently modified Go files:**
+```bash
+csx search "error" --filter 'language == "go" && commit_date > timestamp("2025-06-01T00:00:00Z")'
+```
+
+**Find large files in a specific directory:**
+```bash
+csx search "config" --filter 'file_path.startsWith("internal/") && file_size > 10000'
+```
+
+**Find test files across languages:**
+```bash
+csx search "assert" --filter 'file_path.endsWith("_test.go") || file_path.endsWith(".test.ts")'
+```
+
+**Find code by a specific author:**
+```bash
+csx search "refactor" --filter 'commit_author_name == "Sam"'
+```
+
+**Exclude generated code:**
+```bash
+csx search "func" --filter '!file_path.contains("generated") && !file_path.contains("vendor")'
+```
+
+**Search across a specific repository and branch:**
+```bash
+csx search "deploy" --filter 'repository == "SCKelemen/codesearch" && branch == "main"'
+```
+
+### Context lines
+
+Search results show surrounding source lines for context, similar to
+`grep -C`. Control the number of lines with `--context` / `-C`:
+
+```bash
+csx search "func" --context 2   # 2 lines above + 2 below (default)
+csx search "func" --context 0   # match line only
+csx search "func" --context 5   # 5 lines above + 5 below
+```
+
+Output format:
+
+```
+ 1. cmd/csx/search.go:42                                              0.016
+    40 | }
+    41 |
+    42 | func runSearch(ctx *clix.Context, request searchRequest) ...
+    43 |     mode, err := normalizeMode(request.Mode)
+    44 |     if err != nil {
+```
+
+- **Match line**: highlighted with accent color and match range markers
+- **Context lines**: muted color with aligned line numbers
+- **Line numbers**: right-aligned, separated by pipe
+
+### Git metadata enrichment
+
+When indexing with `--git`, each document is enriched with metadata from the
+`.git` directory. This metadata powers the commit-related CEL filter variables.
+
+```bash
+csx index . --git --output ./index
+```
+
+The indexer extracts:
+
+| Metadata | Source | Stored as |
+|----------|--------|-----------|
+| Repository name | `git remote` | `repository` field + document `RepositoryID` |
+| Branch | `git rev-parse` | `branch` field + document `Branch` |
+| Last commit SHA | `git log -1` | `commit_sha` metadata |
+| Author name | `git log -1` | `author_name` metadata |
+| Author email | `git log -1` | `author_email` metadata |
+| Commit message | `git log -1` | `commit_message` metadata |
+| Last modified date | `git log -1` | `last_modified` metadata |
+| First commit date | `git log --reverse` | `first_committed` metadata |
+| Commit count | `git rev-list --count` | `commit_count` metadata |
+
 ### Using the CLI
 
 Install the CLI:
@@ -202,7 +392,7 @@ single tool.
 Build a local index for a file or directory.
 
 ```bash
-csx index <path> [--output ./index] [--language go,ts] [--embeddings]
+csx index <path> [--output ./index] [--language go,ts] [--embeddings] [--git]
 ```
 
 Examples:
@@ -211,6 +401,7 @@ Examples:
 csx index . --output ./index
 csx index ./cmd/csx --output ./index --language go
 csx --lsp index . --output ./index --embeddings
+csx index . --output ./index --git
 ```
 
 Notes:
@@ -225,7 +416,7 @@ Notes:
 Search a local index or a remote service.
 
 ```bash
-csx search [query] [--index ./index] [--limit 20] [--mode hybrid|lexical|semantic] [--json] [--remote <addr>]
+csx search [query] [--index ./index] [--limit 20] [--mode hybrid|lexical|semantic] [--filter <cel>] [--context N] [--json] [--remote <addr>]
 ```
 
 Examples:
@@ -234,12 +425,15 @@ Examples:
 csx search "NewService" --index ./index
 csx search "hoverResult" --index ./index --mode lexical --json
 csx search "symbol extraction" --remote 127.0.0.1:8080
+csx search "handleRequest" --filter 'language == "go"' --context 3
 ```
 
 Notes:
 
 - Omitting the query launches interactive search
 - `--mode` supports lexical, semantic, and hybrid retrieval
+- `--filter` accepts CEL expressions (see [Querying](#querying) for the full variable reference)
+- `--context` / `-C` controls surrounding lines shown (default 2, use 0 for match only)
 - `--remote` first attempts ConnectRPC and then falls back to a JSON endpoint
 
 ### `csx serve`
