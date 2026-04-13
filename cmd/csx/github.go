@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/SCKelemen/clix"
@@ -133,20 +132,65 @@ func runGitHub(ctx *clix.Context, ui *cliUI, token, user, org, outputDir string,
 	var totalBytes int64
 	var indexedRepos int
 
-	for i, repo := range repos {
-		repoName := repo.GetFullName()
-		ui.info("[%d/%d] %s", i+1, len(repos), repoName)
+	// Map-reduce: download repos in parallel, index serially.
+	type repoResult struct {
+		repoName string
+		index    int
+		files    []indexedEntry
+		err      error
+	}
 
-		files, bytes, err := indexGitHubRepo(ctx, client, repo, engine, langFilters, concurrency, ui)
+	downloadWorkers := min(4, len(repos))
+	jobs := make(chan int, len(repos))
+	results := make(chan repoResult, downloadWorkers*2)
+
+	// Map: parallel downloads
+	var downloadWg sync.WaitGroup
+	for w := 0; w < downloadWorkers; w++ {
+		downloadWg.Add(1)
+		go func() {
+			defer downloadWg.Done()
+			for idx := range jobs {
+				repo := repos[idx]
+				repoName := repo.GetFullName()
+				entries, err := downloadGitHubRepo(ctx, client, repo, langFilters, concurrency)
+				results <- repoResult{repoName: repoName, index: idx, files: entries, err: err}
+			}
+		}()
+	}
+
+	// Feed jobs
+	go func() {
+		for i := range repos {
+			jobs <- i
+		}
+		close(jobs)
+		downloadWg.Wait()
+		close(results)
+	}()
+
+	// Reduce: index serially from channel
+	for r := range results {
+		ui.info("[%d/%d] %s", r.index+1, len(repos), r.repoName)
+		if r.err != nil {
+			ui.info("  skip: %v", r.err)
+			continue
+		}
+		if len(r.files) == 0 {
+			ui.info("  skip: no indexable files")
+			continue
+		}
+
+		repoFiles, repoBytes, err := indexDownloadedFiles(ctx, engine, r.files)
 		if err != nil {
 			ui.info("  skip: %v", err)
 			continue
 		}
 
-		totalFiles += files
-		totalBytes += bytes
+		totalFiles += repoFiles
+		totalBytes += repoBytes
 		indexedRepos++
-		ui.info("  indexed %d files (%s)", files, humanBytes(bytes))
+		ui.info("  indexed %d files (%s)", repoFiles, humanBytes(repoBytes))
 	}
 
 	if err := engine.Close(); err != nil {
@@ -162,128 +206,6 @@ func runGitHub(ctx *clix.Context, ui *cliUI, token, user, org, outputDir string,
 	return nil
 }
 
-// indexGitHubRepo indexes a single repository. It tries the tarball API first
-// (single HTTP request for the whole repo), falling back to parallel per-file
-// fetching via the Contents API if the tarball is unavailable.
-func indexGitHubRepo(ctx *clix.Context, client *github.Client, repo *github.Repository, engine *codesearch.Engine, langFilters map[string]struct{}, concurrency int, ui *cliUI) (int, int64, error) {
-	owner := repo.GetOwner().GetLogin()
-	name := repo.GetName()
-	branch := repo.GetDefaultBranch()
-	if branch == "" {
-		branch = "main"
-	}
-
-	// Try tarball first — one HTTP request for the entire repo
-	files, bytes, err := indexViaTarball(ctx, client, owner, name, branch, engine, langFilters, ui)
-	if err == nil {
-		return files, bytes, nil
-	}
-
-	ui.info("  tarball unavailable (%v), using parallel API fetch", err)
-
-	// Fallback: parallel per-file fetch via Contents API
-	return indexViaContentsAPI(ctx, client, owner, name, branch, engine, langFilters, concurrency)
-}
-
-// indexViaTarball downloads the repo as a gzipped tarball and indexes all files
-// in a single pass. This uses 1 API call regardless of repo size.
-func indexViaTarball(ctx context.Context, client *github.Client, owner, name, branch string, engine *codesearch.Engine, langFilters map[string]struct{}, ui *cliUI) (int, int64, error) {
-	archiveURL, _, err := client.Repositories.GetArchiveLink(ctx, owner, name, github.Tarball, &github.RepositoryContentGetOptions{Ref: branch}, 10)
-	if err != nil {
-		return 0, 0, fmt.Errorf("get archive link: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, archiveURL.String(), nil)
-	if err != nil {
-		return 0, 0, fmt.Errorf("create request: %w", err)
-	}
-
-	ui.info("  downloading tarball...")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, 0, fmt.Errorf("download tarball: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, 0, fmt.Errorf("tarball HTTP %d", resp.StatusCode)
-	}
-
-	gz, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return 0, 0, fmt.Errorf("gzip reader: %w", err)
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	tmpDir := filepath.Join(os.TempDir(), "csx-tarball", owner, name)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	var indexed int
-	var totalBytes int64
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return indexed, totalBytes, fmt.Errorf("read tar: %w", err)
-		}
-
-		if hdr.Typeflag != tar.TypeReg {
-			continue
-		}
-
-		// GitHub tarballs have a prefix like "owner-repo-sha/"
-		// Strip the first path component to get the real file path
-		path := stripTarPrefix(hdr.Name)
-		if path == "" {
-			continue
-		}
-
-		if hdr.Size > maxFileSize {
-			continue
-		}
-		if skipPath(path) {
-			continue
-		}
-		if !languageAllowed(path, langFilters) {
-			continue
-		}
-
-		content, err := io.ReadAll(io.LimitReader(tr, maxFileSize+1))
-		if err != nil {
-			continue
-		}
-		if int64(len(content)) > maxFileSize {
-			continue
-		}
-
-		// Write to temp file for the engine
-		tmpPath := filepath.Join(tmpDir, path)
-		if err := os.MkdirAll(filepath.Dir(tmpPath), 0o755); err != nil {
-			continue
-		}
-		if err := os.WriteFile(tmpPath, content, 0o644); err != nil {
-			continue
-		}
-
-		uri := fmt.Sprintf("github://%s/%s/%s@%s", owner, name, path, branch)
-		if err := engine.Index(ctx, tmpPath, codesearch.WithURI(uri)); err != nil {
-			continue
-		}
-
-		indexed++
-		totalBytes += int64(len(content))
-		if indexed == 1 || indexed%50 == 0 {
-			ui.info("  extracting... %d files (%s)", indexed, humanBytes(totalBytes))
-		}
-	}
-
-	return indexed, totalBytes, nil
-}
-
 // stripTarPrefix removes the first path component from a tar entry name.
 // GitHub tarballs use "owner-repo-commitsha/" as the prefix.
 func stripTarPrefix(name string) string {
@@ -294,22 +216,78 @@ func stripTarPrefix(name string) string {
 	return name[idx+1:]
 }
 
-// indexViaContentsAPI fetches files in parallel using the GitHub Contents API.
-// This is the fallback when tarball download is unavailable.
-func indexViaContentsAPI(ctx context.Context, client *github.Client, owner, name, branch string, engine *codesearch.Engine, langFilters map[string]struct{}, concurrency int) (int, int64, error) {
-	tree, _, err := client.Git.GetTree(ctx, owner, name, branch, true)
-	if err != nil {
-		return 0, 0, fmt.Errorf("get tree: %w", err)
+// indexedEntry holds a downloaded file ready for indexing.
+type indexedEntry struct {
+	uri     string
+	content []byte
+	tmpPath string
+}
+
+// downloadGitHubRepo downloads all files from a repo without indexing.
+func downloadGitHubRepo(ctx context.Context, client *github.Client, repo *github.Repository, langFilters map[string]struct{}, concurrency int) ([]indexedEntry, error) {
+	owner := repo.GetOwner().GetLogin()
+	name := repo.GetName()
+	branch := repo.GetDefaultBranch()
+	if branch == "" {
+		branch = "main"
 	}
 
-	// Filter to indexable files
-	var entries []*github.TreeEntry
-	for _, entry := range tree.Entries {
-		if entry.GetType() != "blob" {
+	entries, err := downloadViaTarball(ctx, client, owner, name, branch, langFilters)
+	if err != nil {
+		entries, err = downloadViaContentsAPI(ctx, client, owner, name, branch, langFilters, concurrency)
+	}
+	return entries, err
+}
+
+// downloadViaTarball downloads a repo tarball and extracts indexable files.
+func downloadViaTarball(ctx context.Context, client *github.Client, owner, name, branch string, langFilters map[string]struct{}) ([]indexedEntry, error) {
+	archiveURL, _, err := client.Repositories.GetArchiveLink(ctx, owner, name, github.Tarball, &github.RepositoryContentGetOptions{Ref: branch}, 10)
+	if err != nil {
+		return nil, fmt.Errorf("get archive link: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, archiveURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download tarball: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("tarball HTTP %d", resp.StatusCode)
+	}
+
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("gzip reader: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	var entries []indexedEntry
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return entries, fmt.Errorf("read tar: %w", err)
+		}
+
+		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		path := entry.GetPath()
-		if entry.GetSize() > maxFileSize {
+
+		path := stripTarPrefix(hdr.Name)
+		if path == "" {
+			continue
+		}
+		if hdr.Size > maxFileSize {
 			continue
 		}
 		if skipPath(path) {
@@ -318,69 +296,109 @@ func indexViaContentsAPI(ctx context.Context, client *github.Client, owner, name
 		if !languageAllowed(path, langFilters) {
 			continue
 		}
-		entries = append(entries, entry)
+
+		fileContent, err := io.ReadAll(io.LimitReader(tr, maxFileSize+1))
+		if err != nil {
+			continue
+		}
+		if int64(len(fileContent)) > maxFileSize {
+			continue
+		}
+
+		uri := fmt.Sprintf("github://%s/%s/%s@%s", owner, name, path, branch)
+		entries = append(entries, indexedEntry{uri: uri, content: fileContent})
 	}
 
-	if len(entries) == 0 {
-		return 0, 0, fmt.Errorf("no indexable files")
+	return entries, nil
+}
+
+// downloadViaContentsAPI downloads files in parallel using the GitHub Contents API.
+func downloadViaContentsAPI(ctx context.Context, client *github.Client, owner, name, branch string, langFilters map[string]struct{}, concurrency int) ([]indexedEntry, error) {
+	tree, _, err := client.Git.GetTree(ctx, owner, name, branch, true)
+	if err != nil {
+		return nil, fmt.Errorf("get tree: %w", err)
 	}
 
-	// Parallel fetch with bounded concurrency
+	var paths []string
+	for _, entry := range tree.Entries {
+		if entry.GetType() != "blob" {
+			continue
+		}
+		path := entry.GetPath()
+		if skipPath(path) {
+			continue
+		}
+		if entry.GetSize() > int(maxFileSize) {
+			continue
+		}
+		if !languageAllowed(path, langFilters) {
+			continue
+		}
+		paths = append(paths, path)
+	}
+
 	type result struct {
-		path    string
-		content []byte
+		entry indexedEntry
+		err   error
 	}
 
 	sem := make(chan struct{}, concurrency)
-	results := make(chan result, len(entries))
+	results := make(chan result, len(paths))
 	var wg sync.WaitGroup
-	var fetchErrors atomic.Int64
 
-	for _, entry := range entries {
+	for _, path := range paths {
 		wg.Add(1)
-		go func(path string) {
+		go func(p string) {
 			defer wg.Done()
-
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			content, err := fetchFileContent(ctx, client, owner, name, path, branch)
+			fileContent, err := fetchFileContent(ctx, client, owner, name, p, branch)
 			if err != nil {
-				fetchErrors.Add(1)
+				results <- result{err: err}
 				return
 			}
-			results <- result{path: path, content: content}
-		}(entry.GetPath())
+			uri := fmt.Sprintf("github://%s/%s/%s@%s", owner, name, p, branch)
+			results <- result{entry: indexedEntry{uri: uri, content: fileContent}}
+		}(path)
 	}
 
-	// Close results channel when all fetches complete
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	tmpDir := filepath.Join(os.TempDir(), "csx-github-tmp", owner, name)
+	var entries []indexedEntry
+	for r := range results {
+		if r.err != nil {
+			continue
+		}
+		entries = append(entries, r.entry)
+	}
+	return entries, nil
+}
+
+// indexDownloadedFiles indexes pre-downloaded files into the engine.
+func indexDownloadedFiles(ctx context.Context, engine *codesearch.Engine, entries []indexedEntry) (int, int64, error) {
+	tmpDir := filepath.Join(os.TempDir(), "csx-index-batch")
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	var indexed int
 	var totalBytes int64
 
-	for r := range results {
-		tmpPath := filepath.Join(tmpDir, r.path)
+	for _, entry := range entries {
+		tmpPath := filepath.Join(tmpDir, fmt.Sprintf("f%d", indexed))
 		if err := os.MkdirAll(filepath.Dir(tmpPath), 0o755); err != nil {
 			continue
 		}
-		if err := os.WriteFile(tmpPath, r.content, 0o644); err != nil {
+		if err := os.WriteFile(tmpPath, entry.content, 0o644); err != nil {
 			continue
 		}
-
-		uri := fmt.Sprintf("github://%s/%s/%s@%s", owner, name, r.path, branch)
-		if err := engine.Index(ctx, tmpPath, codesearch.WithURI(uri)); err != nil {
+		if err := engine.Index(ctx, tmpPath, codesearch.WithURI(entry.uri)); err != nil {
 			continue
 		}
-
 		indexed++
-		totalBytes += int64(len(r.content))
+		totalBytes += int64(len(entry.content))
 	}
 
 	return indexed, totalBytes, nil

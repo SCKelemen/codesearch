@@ -12,11 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/SCKelemen/clix"
-	"github.com/SCKelemen/codesearch"
 )
 
 const defaultPierreIndexDir = ".csx/pierre"
@@ -265,27 +263,70 @@ func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch,
 	var totalBytes int64
 	var indexedRepos int
 
-	for i, repo := range repos {
-		ui.info("[%d/%d] %s", i+1, len(repos), repo.Name)
+	// Map-reduce: download repos in parallel, index serially.
+	type pierreRepoResult struct {
+		repoName string
+		index    int
+		files    []indexedEntry
+		err      error
+	}
 
-		ref := branch
-		if ref == "" {
-			ref = repo.DefaultBranch
+	downloadWorkers := min(4, len(repos))
+	jobs := make(chan int, len(repos))
+	results := make(chan pierreRepoResult, downloadWorkers*2)
+
+	// Map: parallel downloads
+	var downloadWg sync.WaitGroup
+	for w := 0; w < downloadWorkers; w++ {
+		downloadWg.Add(1)
+		go func() {
+			defer downloadWg.Done()
+			for idx := range jobs {
+				repo := repos[idx]
+				ref := branch
+				if ref == "" {
+					ref = repo.DefaultBranch
+				}
+				if ref == "" {
+					ref = "main"
+				}
+				entries, err := downloadPierreRepo(ctx, client, repo, ref, langFilters, concurrency)
+				results <- pierreRepoResult{repoName: repo.Name, index: idx, files: entries, err: err}
+			}
+		}()
+	}
+
+	go func() {
+		for i := range repos {
+			jobs <- i
 		}
-		if ref == "" {
-			ref = "main"
+		close(jobs)
+		downloadWg.Wait()
+		close(results)
+	}()
+
+	// Reduce: index serially from channel
+	for r := range results {
+		ui.info("[%d/%d] %s", r.index+1, len(repos), r.repoName)
+		if r.err != nil {
+			ui.info("  skip: %v", r.err)
+			continue
+		}
+		if len(r.files) == 0 {
+			ui.info("  skip: no indexable files")
+			continue
 		}
 
-		files, bytes, err := indexPierreRepo(ctx, client, repo, ref, engine, langFilters, concurrency, ui)
+		repoFiles, repoBytes, err := indexDownloadedFiles(ctx, engine, r.files)
 		if err != nil {
 			ui.info("  skip: %v", err)
 			continue
 		}
 
-		totalFiles += files
-		totalBytes += bytes
+		totalFiles += repoFiles
+		totalBytes += repoBytes
 		indexedRepos++
-		ui.info("  indexed %d files (%s)", files, humanBytes(bytes))
+		ui.info("  indexed %d files (%s)", repoFiles, humanBytes(repoBytes))
 	}
 
 	if err := engine.Close(); err != nil {
@@ -299,6 +340,143 @@ func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch,
 	ui.info("search with: csx search --index %s <query>", resolvedOutput)
 
 	return nil
+}
+
+// downloadPierreRepo downloads all files from a Pierre repo without indexing.
+func downloadPierreRepo(ctx context.Context, client *pierreClient, repo pierreRepo, ref string, langFilters map[string]struct{}, concurrency int) ([]indexedEntry, error) {
+	entries, err := downloadPierreTarball(ctx, client, repo, ref, langFilters)
+	if err != nil {
+		entries, err = downloadPierreFiles(ctx, client, repo, ref, langFilters, concurrency)
+	}
+	return entries, err
+}
+
+// downloadPierreTarball downloads a Pierre repo archive and extracts files.
+func downloadPierreTarball(ctx context.Context, client *pierreClient, repo pierreRepo, ref string, langFilters map[string]struct{}) ([]indexedEntry, error) {
+	body, err := client.getArchive(ctx, repo.ID, ref)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+
+	gz, err := gzip.NewReader(body)
+	if err != nil {
+		return nil, fmt.Errorf("gzip reader: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	var entries []indexedEntry
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return entries, fmt.Errorf("read tar: %w", err)
+		}
+
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+
+		path := stripTarPrefix(hdr.Name)
+		if path == "" {
+			path = hdr.Name
+		}
+		if hdr.Size > maxFileSize {
+			continue
+		}
+		if skipPath(path) {
+			continue
+		}
+		if !languageAllowed(path, langFilters) {
+			continue
+		}
+
+		fileContent, err := io.ReadAll(io.LimitReader(tr, maxFileSize+1))
+		if err != nil {
+			continue
+		}
+		if int64(len(fileContent)) > maxFileSize {
+			continue
+		}
+
+		uri := fmt.Sprintf("pierre://%s/%s@%s", repo.Name, path, ref)
+		entries = append(entries, indexedEntry{uri: uri, content: fileContent})
+	}
+
+	return entries, nil
+}
+
+// downloadPierreFiles downloads files in parallel using the Pierre file API.
+func downloadPierreFiles(ctx context.Context, client *pierreClient, repo pierreRepo, ref string, langFilters map[string]struct{}, concurrency int) ([]indexedEntry, error) {
+	files, err := client.listFiles(ctx, repo.ID, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	var paths []pierreFileEntry
+	for _, f := range files {
+		if f.Type != "blob" && f.Type != "file" && f.Type != "" {
+			continue
+		}
+		if f.Size > maxFileSize {
+			continue
+		}
+		if skipPath(f.Path) {
+			continue
+		}
+		if !languageAllowed(f.Path, langFilters) {
+			continue
+		}
+		paths = append(paths, f)
+	}
+
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no indexable files")
+	}
+
+	type result struct {
+		entry indexedEntry
+		err   error
+	}
+
+	sem := make(chan struct{}, concurrency)
+	results := make(chan result, len(paths))
+	var wg sync.WaitGroup
+
+	for _, entry := range paths {
+		wg.Add(1)
+		go func(path string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			fileContent, err := client.getFile(ctx, repo.ID, path, ref)
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			uri := fmt.Sprintf("pierre://%s/%s@%s", repo.Name, path, ref)
+			results <- result{entry: indexedEntry{uri: uri, content: fileContent}}
+		}(entry.Path)
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var entries []indexedEntry
+	for r := range results {
+		if r.err != nil {
+			continue
+		}
+		entries = append(entries, r.entry)
+	}
+	return entries, nil
 }
 
 func discoverPierreRepos(ctx *clix.Context, client *pierreClient, repoFilter string, maxRepos int) ([]pierreRepo, error) {
@@ -322,199 +500,4 @@ func discoverPierreRepos(ctx *clix.Context, client *pierreClient, repoFilter str
 	}
 
 	return allRepos, nil
-}
-
-// indexPierreRepo indexes a single Pierre repository. Tries the archive API
-// first, falls back to parallel per-file fetching.
-func indexPierreRepo(ctx *clix.Context, client *pierreClient, repo pierreRepo, ref string, engine *codesearch.Engine, langFilters map[string]struct{}, concurrency int, ui *cliUI) (int, int64, error) {
-	files, bytes, err := indexPierreViaTarball(ctx, client, repo, ref, engine, langFilters, ui)
-	if err == nil {
-		return files, bytes, nil
-	}
-
-	ui.info("  archive unavailable (%v), using parallel file fetch", err)
-
-	return indexPierreViaFiles(ctx, client, repo, ref, engine, langFilters, concurrency, ui)
-}
-
-// indexPierreViaTarball downloads the repo archive and indexes in a single pass.
-func indexPierreViaTarball(ctx context.Context, client *pierreClient, repo pierreRepo, ref string, engine *codesearch.Engine, langFilters map[string]struct{}, ui *cliUI) (int, int64, error) {
-	ui.info("  downloading archive for %s@%s...", repo.Name, ref)
-	body, err := client.getArchive(ctx, repo.ID, ref)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer body.Close()
-
-	gz, err := gzip.NewReader(body)
-	if err != nil {
-		return 0, 0, fmt.Errorf("gzip reader: %w", err)
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	tmpDir := filepath.Join(os.TempDir(), "csx-pierre-tarball", repo.ID)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	var indexed int
-	var totalBytes int64
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return indexed, totalBytes, fmt.Errorf("read tar: %w", err)
-		}
-
-		if hdr.Typeflag != tar.TypeReg {
-			continue
-		}
-
-		path := stripTarPrefix(hdr.Name)
-		if path == "" {
-			path = hdr.Name
-		}
-
-		if hdr.Size > maxFileSize {
-			continue
-		}
-		if skipPath(path) {
-			continue
-		}
-		if !languageAllowed(path, langFilters) {
-			continue
-		}
-
-		content, err := io.ReadAll(io.LimitReader(tr, maxFileSize+1))
-		if err != nil {
-			continue
-		}
-		if int64(len(content)) > maxFileSize {
-			continue
-		}
-
-		tmpPath := filepath.Join(tmpDir, path)
-		if err := os.MkdirAll(filepath.Dir(tmpPath), 0o755); err != nil {
-			continue
-		}
-		if err := os.WriteFile(tmpPath, content, 0o644); err != nil {
-			continue
-		}
-
-		uri := fmt.Sprintf("pierre://%s/%s@%s", repo.Name, path, ref)
-		if err := engine.Index(ctx, tmpPath, codesearch.WithURI(uri)); err != nil {
-			continue
-		}
-
-		indexed++
-		totalBytes += int64(len(content))
-		if indexed == 1 || indexed%25 == 0 {
-			ui.info("    tarball indexed %d files (%s)", indexed, humanBytes(totalBytes))
-		}
-	}
-
-	return indexed, totalBytes, nil
-}
-
-// indexPierreViaFiles fetches files in parallel using the Pierre file API.
-func indexPierreViaFiles(ctx context.Context, client *pierreClient, repo pierreRepo, ref string, engine *codesearch.Engine, langFilters map[string]struct{}, concurrency int, ui *cliUI) (int, int64, error) {
-	files, err := client.listFiles(ctx, repo.ID, ref)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	var entries []pierreFileEntry
-	for _, f := range files {
-		if f.Type != "blob" && f.Type != "file" && f.Type != "" {
-			continue
-		}
-		if f.Size > maxFileSize {
-			continue
-		}
-		if skipPath(f.Path) {
-			continue
-		}
-		if !languageAllowed(f.Path, langFilters) {
-			continue
-		}
-		entries = append(entries, f)
-	}
-
-	if len(entries) == 0 {
-		return 0, 0, fmt.Errorf("no indexable files")
-	}
-
-	ui.info("  fetching %d files via Pierre API...", len(entries))
-
-	type result struct {
-		path    string
-		content []byte
-	}
-
-	sem := make(chan struct{}, concurrency)
-	results := make(chan result, len(entries))
-	var wg sync.WaitGroup
-	var fetchErrors atomic.Int64
-
-	for _, entry := range entries {
-		wg.Add(1)
-		go func(path string) {
-			defer wg.Done()
-
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			content, err := client.getFile(ctx, repo.ID, path, ref)
-			if err != nil {
-				fetchErrors.Add(1)
-				return
-			}
-			if int64(len(content)) > maxFileSize {
-				return
-			}
-			results <- result{path: path, content: content}
-		}(entry.Path)
-	}
-
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	tmpDir := filepath.Join(os.TempDir(), "csx-pierre-files", repo.ID)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	var indexed int
-	var totalBytes int64
-	var processed int
-
-	for r := range results {
-		processed++
-		tmpPath := filepath.Join(tmpDir, r.path)
-		if err := os.MkdirAll(filepath.Dir(tmpPath), 0o755); err != nil {
-			continue
-		}
-		if err := os.WriteFile(tmpPath, r.content, 0o644); err != nil {
-			continue
-		}
-
-		uri := fmt.Sprintf("pierre://%s/%s@%s", repo.Name, r.path, ref)
-		if err := engine.Index(ctx, tmpPath, codesearch.WithURI(uri)); err != nil {
-			continue
-		}
-
-		indexed++
-		totalBytes += int64(len(r.content))
-		if processed == 1 || processed == len(entries) || processed%25 == 0 {
-			ui.info("    indexed %d/%d files (%s)", processed, len(entries), humanBytes(totalBytes))
-		}
-	}
-
-	if indexed == 0 && fetchErrors.Load() > 0 {
-		return 0, 0, fmt.Errorf("failed to fetch %d files from Pierre", fetchErrors.Load())
-	}
-
-	return indexed, totalBytes, nil
 }
