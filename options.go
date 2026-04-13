@@ -2,6 +2,7 @@ package codesearch
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/SCKelemen/codesearch/embedding"
 	"github.com/SCKelemen/codesearch/hybrid"
@@ -23,6 +24,7 @@ type engineConfig struct {
 
 	embedder     embedding.Embedder
 	hybridSearch bool
+	logger       *slog.Logger
 }
 
 // WithMemoryStore configures the engine to use in-memory stores.
@@ -136,6 +138,7 @@ type SymbolExtractor func(ctx context.Context, path string, language string, con
 
 type indexOptions struct {
 	language        string
+	uri             string
 	embeddings      bool
 	symbolExtractor SymbolExtractor
 }
@@ -144,6 +147,13 @@ type indexOptions struct {
 func WithLanguage(language string) IndexOption {
 	return func(opts *indexOptions) {
 		opts.language = language
+	}
+}
+
+// WithURI overrides the stored document path/URI while indexing local content.
+func WithURI(uri string) IndexOption {
+	return func(opts *indexOptions) {
+		opts.uri = uri
 	}
 }
 

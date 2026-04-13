@@ -199,7 +199,11 @@ func (e *Engine) indexDocument(ctx context.Context, path string, content []byte,
 	}
 
 	now := time.Now().UTC()
-	documentID := cleanPath(path)
+	documentPath := path
+	if opts.uri != "" {
+		documentPath = opts.uri
+	}
+	documentID := cleanPath(documentPath)
 	existing, err := e.Documents.Lookup(ctx, documentID)
 	if err != nil {
 		return fmt.Errorf("lookup document %q: %w", documentID, err)
@@ -225,7 +229,7 @@ func (e *Engine) indexDocument(ctx context.Context, path string, content []byte,
 
 	doc := store.Document{
 		ID:        documentID,
-		Path:      documentID,
+		Path:      documentPath,
 		Language:  language,
 		Content:   append([]byte(nil), content...),
 		Size:      int64(len(content)),
@@ -261,7 +265,7 @@ func (e *Engine) indexDocument(ctx context.Context, path string, content []byte,
 			if err := e.Vectors.Put(ctx, store.StoredVector{
 				ID:         documentID,
 				DocumentID: documentID,
-				Path:       documentID,
+				Path:       documentPath,
 				Model:      e.Embedder.Model(),
 				Values:     append([]float32(nil), vectors[0]...),
 				CreatedAt:  createdAt,

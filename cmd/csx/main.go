@@ -40,6 +40,7 @@ func newApp() *clix.App {
 		newInteractiveCommand(),
 		newServeCommand(),
 		newStatusCommand(),
+newGitHubCommand(),
 	}
 
 	app.Root = root
