@@ -39,6 +39,7 @@ func newGitHubCommand() *clix.Command {
 	var maxRepos int
 	var includeArchived bool
 	var includeForked bool
+	var shallow = true
 	var concurrency int
 
 	cmd.Flags.StringVar(clix.StringVarOptions{
@@ -79,18 +80,22 @@ func newGitHubCommand() *clix.Command {
 		FlagOptions: clix.FlagOptions{Name: "forks", Usage: "Include forked repositories"},
 		Value:       &includeForked,
 	})
+	cmd.Flags.BoolVar(clix.BoolVarOptions{
+		FlagOptions: clix.FlagOptions{Name: "shallow", Short: "s", Usage: "Shallow index: only the latest commit on the default branch (default)"},
+		Value:       &shallow,
+	})
 
 	cmd.Run = func(ctx *clix.Context) error {
 		ui := newCLIUI(ctx.App.Out)
 		if concurrency < 1 {
 			concurrency = maxConcurrentFetches
 		}
-		return runGitHub(ctx, ui, token, user, org, outputDir, parseLanguageFilter(languageFilter), maxRepos, concurrency, includeArchived, includeForked)
+		return runGitHub(ctx, ui, token, user, org, outputDir, parseLanguageFilter(languageFilter), maxRepos, concurrency, includeArchived, includeForked, shallow)
 	}
 	return cmd
 }
 
-func runGitHub(ctx *clix.Context, ui *cliUI, token, user, org, outputDir string, langFilters map[string]struct{}, maxRepos, concurrency int, includeArchived, includeForked bool) error {
+func runGitHub(ctx *clix.Context, ui *cliUI, token, user, org, outputDir string, langFilters map[string]struct{}, maxRepos, concurrency int, includeArchived, includeForked, shallow bool) error {
 	if token == "" {
 		token = os.Getenv("GITHUB_TOKEN")
 	}
@@ -142,7 +147,10 @@ func runGitHub(ctx *clix.Context, ui *cliUI, token, user, org, outputDir string,
 		totalFiles     int
 		totalBytes     int64
 		indexedRepos   int
+		skippedRepos   int
 		processedRepos int
+		downloadBytes  int64
+		languages      map[string]int
 	}
 
 	summary, err := pool.MapReduce(ctx, repos, min(4, len(repos)),
@@ -185,9 +193,25 @@ func runGitHub(ctx *clix.Context, ui *cliUI, token, user, org, outputDir string,
 	}
 
 	elapsed := time.Since(startedAt).Round(time.Millisecond)
+	ui.println("")
+	ui.section("Summary")
+	if shallow {
+		ui.kv("mode", "shallow (latest commit only)")
+	} else {
+		ui.kv("mode", "deep (all history)")
+	}
+	ui.kv("started", startedAt.Format(time.RFC3339))
+	ui.kv("elapsed", elapsed.String())
+	ui.kv("repos", fmt.Sprintf("%d indexed, %d skipped, %d total", summary.indexedRepos, summary.skippedRepos, len(repos)))
+	ui.kv("files", fmt.Sprintf("%d", summary.totalFiles))
+	ui.kv("content", humanBytes(summary.totalBytes))
+	ui.kv("downloaded", humanBytes(summary.downloadBytes))
+	if len(summary.languages) > 0 {
+		ui.kv("languages", fmt.Sprintf("%d", len(summary.languages)))
+	}
+	ui.kv("output", resolvedOutput)
+	ui.println("")
 	ui.successf("indexed %d repos, %d files (%s) in %s", summary.indexedRepos, summary.totalFiles, humanBytes(summary.totalBytes), elapsed)
-	ui.info("indexes stored in %s", resolvedOutput)
-	ui.info("")
 	ui.info("search with: csx search --index %s <query>", resolvedOutput)
 
 	return nil

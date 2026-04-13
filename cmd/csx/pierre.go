@@ -175,6 +175,7 @@ func newPierreCommand() *clix.Command {
 	var branch string
 	var maxRepos int
 	var concurrency int
+	var shallow = true
 
 	cmd.Flags.StringVar(clix.StringVarOptions{
 		FlagOptions: clix.FlagOptions{Name: "url", Usage: "Pierre instance URL (or set PIERRE_URL)"},
@@ -210,18 +211,22 @@ func newPierreCommand() *clix.Command {
 		Default:     "8",
 		Value:       &concurrency,
 	})
+	cmd.Flags.BoolVar(clix.BoolVarOptions{
+		FlagOptions: clix.FlagOptions{Name: "shallow", Short: "s", Usage: "Shallow index: only the latest commit on the default branch (default)"},
+		Value:       &shallow,
+	})
 
 	cmd.Run = func(ctx *clix.Context) error {
 		ui := newCLIUI(ctx.App.Out)
 		if concurrency < 1 {
 			concurrency = maxConcurrentFetches
 		}
-		return runPierre(ctx, ui, baseURL, token, repoFilter, branch, outputDir, parseLanguageFilter(languageFilter), maxRepos, concurrency)
+		return runPierre(ctx, ui, baseURL, token, repoFilter, branch, outputDir, parseLanguageFilter(languageFilter), maxRepos, concurrency, shallow)
 	}
 	return cmd
 }
 
-func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch, outputDir string, langFilters map[string]struct{}, maxRepos, concurrency int) error {
+func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch, outputDir string, langFilters map[string]struct{}, maxRepos, concurrency int, shallow bool) error {
 	if baseURL == "" {
 		baseURL = os.Getenv("PIERRE_URL")
 	}
@@ -274,6 +279,9 @@ func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch,
 		totalBytes     int64
 		indexedRepos   int
 		processedRepos int
+		skippedRepos   int
+		downloadBytes  int64
+		languages      map[string]int
 	}
 
 	summary, err := pool.MapReduce(ctx, repos, min(4, len(repos)),
@@ -323,9 +331,25 @@ func runPierre(ctx *clix.Context, ui *cliUI, baseURL, token, repoFilter, branch,
 	}
 
 	elapsed := time.Since(startedAt).Round(time.Millisecond)
+	ui.println("")
+	ui.section("Summary")
+	if shallow {
+		ui.kv("mode", "shallow (latest commit only)")
+	} else {
+		ui.kv("mode", "deep (all history)")
+	}
+	ui.kv("started", startedAt.Format(time.RFC3339))
+	ui.kv("elapsed", elapsed.String())
+	ui.kv("repos", fmt.Sprintf("%d indexed, %d skipped, %d total", summary.indexedRepos, summary.skippedRepos, len(repos)))
+	ui.kv("files", fmt.Sprintf("%d", summary.totalFiles))
+	ui.kv("content", humanBytes(summary.totalBytes))
+	ui.kv("downloaded", humanBytes(summary.downloadBytes))
+	if len(summary.languages) > 0 {
+		ui.kv("languages", fmt.Sprintf("%d", len(summary.languages)))
+	}
+	ui.kv("output", resolvedOutput)
+	ui.println("")
 	ui.successf("indexed %d repos, %d files (%s) in %s", summary.indexedRepos, summary.totalFiles, humanBytes(summary.totalBytes), elapsed)
-	ui.info("indexes stored in %s", resolvedOutput)
-	ui.info("")
 	ui.info("search with: csx search --index %s <query>", resolvedOutput)
 
 	return nil
