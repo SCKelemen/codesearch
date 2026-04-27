@@ -3,7 +3,7 @@ module github.com/SCKelemen/codesearch
 go 1.26
 
 require (
-	connectrpc.com/connect v1.19.1
+	connectrpc.com/connect v1.19.2
 	github.com/SCKelemen/clix v0.2.0
 	github.com/SCKelemen/color v1.0.5
 	github.com/SCKelemen/text v1.1.3
